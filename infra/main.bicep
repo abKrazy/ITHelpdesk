@@ -181,6 +181,7 @@ module foundry './modules/foundry.bicep' = {
     // Foundry connects to Search + Storage for grounding.
     searchServiceResourceId: search.outputs.resourceId
     storageAccountResourceId: storage.outputs.resourceId
+    kbContainerName: kbContainerName
     applicationInsightsResourceId: monitoring.outputs.applicationInsightsResourceId
     managedIdentityResourceId: identity.outputs.resourceId
     managedIdentityPrincipalId: identity.outputs.principalId

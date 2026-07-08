@@ -39,6 +39,9 @@ param searchServiceResourceId string
 @description('Resource ID of the Storage account to connect.')
 param storageAccountResourceId string
 
+@description('KB blob container name for the project storage connection.')
+param kbContainerName string
+
 @description('Resource ID of Application Insights for tracing.')
 param applicationInsightsResourceId string
 
@@ -170,6 +173,7 @@ resource storageConnection 'Microsoft.CognitiveServices/accounts/projects/connec
       ApiType: 'Azure'
       ResourceId: storageAccountResourceId
       AccountName: storageAccountNameFromId
+      ContainerName: kbContainerName
       Location: location
     }
   }

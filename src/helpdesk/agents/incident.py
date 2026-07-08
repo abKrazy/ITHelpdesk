@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from .prompts import INCIDENT_INSTRUCTIONS
 from .servicenow_client import (
+    STATE_LABEL,
     URGENCY_LABEL,
     URGENCY_MAP,
     Incident,
@@ -122,7 +123,8 @@ class IncidentAgent:
         d = inc.to_dict()
         msg = (
             f"Incident {inc.number}: {d.get('short_description', '')}\n"
-            f"  State: {inc.state}  Urgency: {URGENCY_LABEL.get(inc.urgency, inc.urgency)}\n"
+            f"  State: {STATE_LABEL.get(inc.state, inc.state)}  "
+            f"Urgency: {URGENCY_LABEL.get(inc.urgency, inc.urgency)}\n"
             f"  Assignment group: {inc.assignment_group}"
         )
         return IncidentResult(action="lookup", message=msg, incident=d)
@@ -173,7 +175,7 @@ class IncidentAgent:
                 action="update", ok=False, message=f"Incident {number} was not found."
             )
         changes = ", ".join(
-            f"{k}={URGENCY_LABEL.get(v, v) if k == 'urgency' else v}" for k, v in fields.items()
+            f"{field}={self._field_label(field, value)}" for field, value in fields.items()
         )
         return IncidentResult(
             action="update",
@@ -183,6 +185,14 @@ class IncidentAgent:
         )
 
     # -- helpers ----------------------------------------------------------
+    @staticmethod
+    def _field_label(field: str, value: str) -> str:
+        if field == "urgency":
+            return URGENCY_LABEL.get(value, value)
+        if field == "state":
+            return STATE_LABEL.get(value, value)
+        return value
+
     @staticmethod
     def _parse_update_fields(user_message: str) -> dict[str, str]:
         fields: dict[str, str] = {}

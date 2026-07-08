@@ -9,3 +9,4 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 - 📌 Team update (2026-07-08T11:18:19-05:00): Infrastructure baseline is green and integrated with the app seams: one resource group, Key Vault-backed ServiceNow secrets into APIM named values, App Service UI, Foundry/search/storage modules, and postprovision Python entry points under the `helpdesk` package.
+- 📌 Team update (2026-07-08T17:19:03-05:00): App Service now receives `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, and `AZURE_OPENAI_CHAT_DEPLOYMENT` from Bicep/live settings, unblocking KB-grounded triage in the deployed app. Final live validation passed. — decided by Tank/Coordinator

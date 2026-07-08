@@ -104,7 +104,17 @@ def test_lookup_incident_status(orch: Orchestrator) -> None:
     assert resp.incident.incident["number"] == "INC0000057"
     assert resp.incident.incident["assignment_group"] == "End User Computing"
     # State/urgency are surfaced to the user.
-    assert "State:" in resp.reply
+    assert "State: In Progress" in resp.reply
+
+
+def test_lookup_incident_status_renders_state_label(orch: Orchestrator) -> None:
+    resp = orch.run("lookup details for incident INC0010027")
+
+    assert resp.incident is not None
+    assert resp.incident.incident is not None
+    assert resp.incident.incident["state"] == "1"
+    assert resp.incident.incident["state_label"] == "New"
+    assert "State: New" in resp.reply
 
 
 # ---------------------------------------------------------------------------

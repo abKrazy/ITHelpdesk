@@ -27,6 +27,14 @@ from typing import Protocol
 # Authoritative mapping lives in src/servicenow (Switch).
 URGENCY_MAP = {"high": "1", "medium": "2", "low": "3"}
 URGENCY_LABEL = {"1": "High", "2": "Medium", "3": "Low"}
+STATE_LABEL = {
+    "1": "New",
+    "2": "In Progress",
+    "3": "On Hold",
+    "6": "Resolved",
+    "7": "Closed",
+    "8": "Canceled",
+}
 
 
 @dataclass
@@ -52,6 +60,7 @@ class Incident:
             "urgency": self.urgency,
             "urgency_label": URGENCY_LABEL.get(self.urgency, self.urgency),
             "state": self.state,
+            "state_label": STATE_LABEL.get(self.state, self.state),
         }
         d.update(self.fields)
         return d

@@ -61,7 +61,7 @@ param embeddingModelName string = 'text-embedding-3-large'
 param searchIndexName string = 'it-helpdesk-kb'
 
 @description('Blob container that holds the raw KB markdown docs.')
-param kbContainerName string = 'kb'
+param kbContainerName string = 'kbdocs'
 
 // -----------------------------------------------------------------------------
 // NAMING — resource token + convention (locked contract)

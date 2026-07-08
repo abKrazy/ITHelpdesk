@@ -54,7 +54,7 @@ def upload_kb_docs() -> None:
         return
 
     blob_endpoint = env("AZURE_STORAGE_BLOB_ENDPOINT")
-    container = env("AZURE_STORAGE_KB_CONTAINER", required=False, default="kb")
+    container = env("AZURE_STORAGE_KB_CONTAINER", required=False, default="kbdocs")
 
     from azure.storage.blob import BlobServiceClient
 

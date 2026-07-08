@@ -36,7 +36,7 @@
       "value": "${AZURE_SEARCH_INDEX_NAME=it-helpdesk-kb}"
     },
     "kbContainerName": {
-      "value": "${AZURE_STORAGE_KB_CONTAINER=kb}"
+      "value": "${AZURE_STORAGE_KB_CONTAINER=kbdocs}"
     }
   }
 }

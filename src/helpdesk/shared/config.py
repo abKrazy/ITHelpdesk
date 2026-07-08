@@ -56,7 +56,7 @@ class Settings:
         # --- Storage (KB source for indexing) --------------------------------
         self.storage_account_name = env.get("AZURE_STORAGE_ACCOUNT_NAME", "")
         self.storage_blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT", "")
-        self.kb_container = env.get("AZURE_STORAGE_KB_CONTAINER", "kb")
+        self.kb_container = env.get("AZURE_STORAGE_KB_CONTAINER", "kbdocs")
 
         # --- Azure AI Search -------------------------------------------------
         self.search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "")

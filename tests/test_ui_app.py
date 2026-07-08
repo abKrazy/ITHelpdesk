@@ -79,6 +79,28 @@ def test_chat_response_schema(client: TestClient) -> None:
     assert body["route"] == ["triage"]
 
 
+def test_chat_orchestrator_failure_returns_json_error(client: TestClient) -> None:
+    """A downstream orchestrator failure is rendered as parseable chat JSON."""
+
+    class FailingOrchestrator:
+        def run(self, _message: str) -> None:
+            raise RuntimeError("MCP endpoint unreachable")
+
+    previous = app.state.orchestrator
+    app.state.orchestrator = FailingOrchestrator()
+    try:
+        resp = client.post("/api/chat", json={"message": "lookup INC0000057"})
+    finally:
+        app.state.orchestrator = previous
+
+    assert resp.status_code == 200
+    assert "application/json" in resp.headers["content-type"]
+    body = resp.json()
+    assert body["route"] == ["error"]
+    assert body["error"] == "MCP endpoint unreachable"
+    assert "couldn't reach the ServiceNow backend" in body["reply"]
+
+
 def test_chat_requires_message_field(client: TestClient) -> None:
     """A malformed body (missing 'message') is rejected with 422, not a 500."""
     resp = client.post("/api/chat", json={})

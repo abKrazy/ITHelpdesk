@@ -12,6 +12,7 @@ App Service start command (deploy root ./src on PYTHONPATH):
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,11 @@ from pydantic import BaseModel
 from ..orchestrator import Orchestrator
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_LOGGER = logging.getLogger(__name__)
+_CHAT_ERROR_REPLY = (
+    "⚠️ I couldn't reach the ServiceNow backend right now — {reason}. "
+    "Please try again or contact an administrator."
+)
 
 
 class ChatRequest(BaseModel):
@@ -31,6 +37,12 @@ class ChatRequest(BaseModel):
 class ChatReply(BaseModel):
     reply: str
     route: list[str]
+    error: str | None = None
+
+
+def _short_error_detail(exc: Exception) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return detail[:240]
 
 
 def create_app() -> FastAPI:
@@ -49,9 +61,18 @@ def create_app() -> FastAPI:
     async def index(request: Request) -> HTMLResponse:
         return _TEMPLATES.TemplateResponse(request, "index.html")
 
-    @app.post("/api/chat", response_model=ChatReply)
+    @app.post("/api/chat", response_model=ChatReply, response_model_exclude_none=True)
     async def chat(payload: ChatRequest) -> ChatReply:
-        result = _orchestrator().run(payload.message)
+        try:
+            result = _orchestrator().run(payload.message)
+        except Exception as exc:
+            detail = _short_error_detail(exc)
+            _LOGGER.exception("Chat orchestrator failed")
+            return ChatReply(
+                reply=_CHAT_ERROR_REPLY.format(reason=detail),
+                route=["error"],
+                error=detail,
+            )
         return ChatReply(reply=result.reply, route=result.route)
 
     @app.get("/healthz")

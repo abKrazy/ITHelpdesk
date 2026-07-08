@@ -43,6 +43,28 @@
       return d;
     }
 
+    async function readChatResponse(res) {
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(res.ok
+          ? 'Agent returned a non-JSON response.'
+          : `Agent returned HTTP ${res.status}: ${text || res.statusText}`);
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch (err) {
+        throw new Error('Agent returned invalid JSON: ' + err.message);
+      }
+
+      if (!res.ok) {
+        throw new Error(data.reply || data.error || `Agent returned HTTP ${res.status}.`);
+      }
+      return data;
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const message = input.value.trim();
@@ -56,7 +78,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message })
         });
-        const data = await res.json();
+        const data = await readChatResponse(res);
         add(data.reply || '(no response)', 'bot');
         if (data.route && data.route.length) {
           const r = document.createElement('div');

@@ -526,3 +526,8 @@ Authoritative sources:
 **By:** Trinity
 **What:** The /api/chat endpoint and browser fetch path now degrade gracefully when the orchestrator or downstream ServiceNow backend fails, returning/rendering parseable assistant-style error JSON instead of a bare server error.
 **Why:** A bare FastAPI 500 produced an unparseable Unexpected token browser error in the customer-facing UI, hiding the actual backend outage from users.
+
+### 2026-07-08: Render friendly ServiceNow incident state labels
+**By:** Trinity
+**What:** Incident user-facing replies now map ServiceNow incident state codes to friendly labels, while preserving raw `state` data and adding `state_label` alongside `urgency_label`.
+**Why:** ServiceNow Table API returns incident state as numeric codes; showing labels like `New` and `In Progress` makes lookup results readable without breaking fallback behavior for novel state codes.

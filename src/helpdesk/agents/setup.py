@@ -14,17 +14,13 @@ from __future__ import annotations
 
 import subprocess
 
+from .embeddings import EMBEDDING_DIMENSIONS
 from .kb import chunk_doc, load_local_kb
 from .prompts import (
     INCIDENT_INSTRUCTIONS,
     ORCHESTRATOR_INSTRUCTIONS,
     TRIAGE_INSTRUCTIONS,
 )
-
-# Dimensions for text-embedding-3-* small/large default to 1536/3072; the small
-# model (1536) is the accelerator default. Overridable via the search field.
-_EMBEDDING_DIMENSIONS = 1536
-
 
 def _log(msg: str) -> None:
     print(f"[setup] {msg}")
@@ -65,7 +61,7 @@ def _build_index_definition(index_name: str):
             name="content_vector",
             type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
             searchable=True,
-            vector_search_dimensions=_EMBEDDING_DIMENSIONS,
+            vector_search_dimensions=EMBEDDING_DIMENSIONS,
             vector_search_profile_name="kb-hnsw-profile",
         ),
     ]
@@ -96,6 +92,24 @@ def _build_index_definition(index_name: str):
     )
 
 
+def _verify_upload_results(results) -> None:
+    """Raise if Azure AI Search reports any failed document upload."""
+    for result in results or []:
+        succeeded = getattr(result, "succeeded", None)
+        if succeeded is None and isinstance(result, dict):
+            succeeded = result.get("succeeded")
+        if succeeded is not False:
+            continue
+
+        key = getattr(result, "key", None)
+        error = getattr(result, "error_message", None)
+        if isinstance(result, dict):
+            key = key or result.get("key")
+            error = error or result.get("errorMessage") or result.get("error_message")
+        detail = f"document {key!r}" if key else "a document"
+        raise RuntimeError(f"Azure AI Search failed to upload {detail}: {error or result!r}")
+
+
 def build_search_index(
     *,
     search_endpoint: str,
@@ -120,7 +134,7 @@ def build_search_index(
     payload: list[dict] = []
     for doc in docs:
         chunks = chunk_doc(doc)
-        vectors = embed_texts(chunks, embedding_deployment)
+        vectors = embed_texts(chunks, embedding_deployment, dimensions=EMBEDDING_DIMENSIONS)
         for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
             payload.append(
                 {
@@ -138,7 +152,8 @@ def build_search_index(
         endpoint=search_endpoint, index_name=index_name, credential=credential
     )
     # mergeOrUpload keyed on stable ids => idempotent re-runs.
-    search_client.merge_or_upload_documents(documents=payload)
+    results = search_client.merge_or_upload_documents(documents=payload)
+    _verify_upload_results(results)
     _log(f"uploaded {len(payload)} chunks from {len(docs)} KB docs")
 
 
@@ -172,12 +187,11 @@ def create_foundry_agents(
     chat_deployment: str,
 ) -> dict[str, str]:
     """Create/refresh the 3 Foundry agents and persist their IDs. Idempotent."""
-    from azure.ai.projects import AIProjectClient
+    from azure.ai.agents import AgentsClient
 
     from ..shared import get_credential
 
-    project = AIProjectClient(endpoint=project_endpoint, credential=get_credential())
-    agents_client = project.agents
+    agents_client = AgentsClient(endpoint=project_endpoint, credential=get_credential())
 
     # Idempotency: index existing agents by name.
     existing: dict[str, str] = {}

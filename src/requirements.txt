@@ -23,8 +23,8 @@ python-dotenv>=1.0
 pydantic>=2.7
 
 # --- Orchestrator + Foundry agents (pyproject [orchestrator]) ---
-azure-ai-projects>=1.0.0b1
-azure-ai-agents>=1.0.0b1
+azure-ai-projects==2.3.0
+azure-ai-agents==1.2.0b6
 openai>=1.40
 
 # --- Triage KB grounding / AI Search indexing (pyproject [agents]) ---

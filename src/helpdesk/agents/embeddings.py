@@ -7,6 +7,9 @@ client. Azure imports are deferred so mock-mode never needs them.
 from __future__ import annotations
 
 
+EMBEDDING_DIMENSIONS = 1536
+
+
 def _openai_client():
     """Return an Azure OpenAI client authenticated with the managed identity."""
     from azure.identity import get_bearer_token_provider
@@ -30,10 +33,10 @@ def _openai_client():
     )
 
 
-def embed_texts(texts: list[str], deployment: str) -> list[list[float]]:
+def embed_texts(texts: list[str], deployment: str, dimensions: int) -> list[list[float]]:
     """Embed a batch of texts, returning one vector per input."""
     if not deployment:
         raise RuntimeError("AZURE_OPENAI_EMBEDDING_DEPLOYMENT is not configured.")
     client = _openai_client()
-    resp = client.embeddings.create(model=deployment, input=texts)
+    resp = client.embeddings.create(model=deployment, input=texts, dimensions=dimensions)
     return [item.embedding for item in resp.data]

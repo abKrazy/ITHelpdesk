@@ -15,24 +15,32 @@ function Get-AzdEnvValue([string]$key) {
   return $val
 }
 
+function Set-AzdEnvValue([string]$key, [string]$value) {
+  azd env set $key $value | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "azd env set $key failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+  }
+}
+
 $defaultInstance = 'https://dev283128.service-now.com'
 
 if (-not (Get-AzdEnvValue 'SERVICENOW_INSTANCE_URL')) {
   $inst = Read-Host "ServiceNow instance URL [$defaultInstance]"
   if ([string]::IsNullOrWhiteSpace($inst)) { $inst = $defaultInstance }
-  azd env set SERVICENOW_INSTANCE_URL $inst | Out-Null
+  Set-AzdEnvValue 'SERVICENOW_INSTANCE_URL' $inst
 }
 
 if (-not (Get-AzdEnvValue 'SERVICENOW_USERNAME')) {
   $user = Read-Host "ServiceNow username"
-  azd env set SERVICENOW_USERNAME $user | Out-Null
+  Set-AzdEnvValue 'SERVICENOW_USERNAME' $user
 }
 
 if (-not (Get-AzdEnvValue 'SERVICENOW_PASSWORD')) {
   $sec = Read-Host "ServiceNow password" -AsSecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-  azd env set SERVICENOW_PASSWORD $plain | Out-Null
+  Set-AzdEnvValue 'SERVICENOW_PASSWORD' $plain
   $plain = $null
 }
 

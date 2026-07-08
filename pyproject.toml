@@ -22,14 +22,15 @@ dependencies = [
 [project.optional-dependencies]
 # Owner: Trinity — Orchestrator + Foundry agents (Azure AI Agents SDK)
 orchestrator = [
-  "azure-ai-projects>=1.0.0b1",   # Foundry project client
-  "azure-ai-agents>=1.0.0b1",     # Foundry agents (create/run)
+  "azure-ai-projects==2.3.0",     # Foundry project SDK
+  "azure-ai-agents==1.2.0b6",     # Foundry agents (create/run)
   "openai>=1.40",
 ]
 # Owner: Trinity — triage KB grounding + indexing
 agents = [
   "azure-search-documents>=11.5.0",
-  "azure-ai-projects>=1.0.0b1",
+  "azure-ai-projects==2.3.0",
+  "azure-ai-agents==1.2.0b6",
 ]
 # Owner: Switch — ServiceNow / APIM MCP client
 servicenow = [

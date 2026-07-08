@@ -112,9 +112,9 @@ class AzureAISearchClient:
         return self._client
 
     def _embed(self, text: str) -> list[float]:
-        from .embeddings import embed_texts
+        from .embeddings import EMBEDDING_DIMENSIONS, embed_texts
 
-        return embed_texts([text], self._embedding_deployment)[0]
+        return embed_texts([text], self._embedding_deployment, dimensions=EMBEDDING_DIMENSIONS)[0]
 
     def search(self, query: str, top: int = 3) -> list[KbHit]:
         from azure.search.documents.models import VectorizedQuery

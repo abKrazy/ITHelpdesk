@@ -28,6 +28,7 @@ from servicenow import (
     ServiceNowUnreachable,
 )
 from servicenow import mapping
+from servicenow.client import OP_CREATE, OP_GET, OP_QUERY, OP_UPDATE, _classify_tool, _resolve_tools
 
 # --- Fake MCP tools mirroring APIM's auto-generated Table API tools ----------
 _TABLE_FIELDS = {
@@ -65,6 +66,39 @@ FAKE_TOOLS = [
     _tool("put-api-now-table-tablename-sys-id", _ITEM_WRITE_FIELDS),
     _tool("patch-api-now-table-tablename-sys-id", _ITEM_WRITE_FIELDS),
     _tool("delete-api-now-table-tablename-sys-id", _ITEM_FIELDS),
+]
+
+_LIVE_BASE_FIELDS = {
+    "sysparm_display_value": {"type": "string"},
+    "sysparm_view": {"type": "string"},
+    "sysparm_exclude_reference_link": {"type": "string"},
+    "tableName": {"type": "string"},
+    "sysparm_fields": {"type": "string"},
+    "sysparm_query_no_domain": {"type": "string"},
+}
+_LIVE_WRITE_FIELDS = {
+    **_LIVE_BASE_FIELDS,
+    "TableRecord": {"type": "object"},
+    "sysparm_suppress_auto_sys_field": {"type": "string"},
+    "sysparm_input_display_value": {"type": "string"},
+}
+LIVE_APIM_TOOLS = [
+    _tool("deleteRecord", {"sys_id": {"type": "string"}, **_LIVE_BASE_FIELDS, "body": {"type": "object"}}),
+    _tool("patchRecord", {"sys_id": {"type": "string"}, **_LIVE_WRITE_FIELDS}),
+    _tool("getRecord", {"sys_id": {"type": "string"}, **_LIVE_BASE_FIELDS}),
+    _tool("createIncident", _LIVE_WRITE_FIELDS),
+    _tool(
+        "queryTable",
+        {
+            **_LIVE_BASE_FIELDS,
+            "sysparm_no_count": {"type": "string"},
+            "sysparm_limit": {"type": "string"},
+            "sysparm_query_category": {"type": "string"},
+            "sysparm_query": {"type": "string"},
+            "sysparm_suppress_pagination_header": {"type": "string"},
+        },
+    ),
+    _tool("updateRecord", {"sys_id": {"type": "string"}, **_LIVE_WRITE_FIELDS}),
 ]
 
 
@@ -172,6 +206,31 @@ def _client(backend: FakeServiceNow, **kw) -> MCPServiceNowClient:
 
 
 # --- Tests -------------------------------------------------------------------
+def test_live_apim_tablerecord_tools_classify_to_logical_operations():
+    by_name = {tool.name: tool for tool in LIVE_APIM_TOOLS}
+
+    assert _classify_tool(by_name["deleteRecord"]) is None
+    assert _classify_tool(by_name["getRecord"]) == OP_GET
+    assert _classify_tool(by_name["queryTable"]) == OP_QUERY
+    assert _classify_tool(by_name["createIncident"]) == OP_CREATE
+    assert _classify_tool(by_name["patchRecord"]) == OP_UPDATE
+    assert _classify_tool(by_name["updateRecord"]) == OP_UPDATE
+
+    resolved = _resolve_tools(LIVE_APIM_TOOLS)
+    assert resolved[OP_CREATE].name == "createIncident"
+    assert resolved[OP_UPDATE].name == "patchRecord"
+    assert resolved[OP_GET].name == "getRecord"
+    assert resolved[OP_QUERY].name == "queryTable"
+
+
+def test_place_body_nests_tablerecord_for_live_apim_write_tools():
+    body = {"short_description": "Epic login failure", "urgency": "2"}
+
+    args = _client(FakeServiceNow())._place_body(LIVE_APIM_TOOLS[3], body)
+
+    assert args == {"TableRecord": body}
+
+
 def test_create_incident_maps_fields_and_urgency():
     backend = FakeServiceNow()
     client = _client(backend)

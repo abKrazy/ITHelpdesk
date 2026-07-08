@@ -128,7 +128,10 @@ _BODY_FIELD_HINTS = {
     "work_notes",
     "comments",
 }
-_BODY_CONTAINER_KEYS = ("body", "requestBody", "payload")
+# APIM MCP-from-REST for the ServiceNow Table API names the request-body
+# object "TableRecord"; keep it with the generic body containers so both
+# tool classification and request argument shaping recognize write tools.
+_BODY_CONTAINER_KEYS = ("body", "requestBody", "payload", "TableRecord")
 
 
 def _tool_props(tool: Any) -> dict[str, Any]:

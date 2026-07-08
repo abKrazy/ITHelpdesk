@@ -4,7 +4,8 @@ Two idempotent steps run after ``azd provision``:
   * :func:`build_search_index` — (re)create the Azure AI Search index over the KB
     (vector + keyword/semantic fields), chunk + embed the KB docs and upload them.
   * :func:`create_foundry_agents` — create/refresh the orchestrator, triage and
-    incident agents in the Foundry project and persist their IDs via ``azd env set``.
+    incident agents in the Foundry project (new Foundry Agent experience, via
+    ``AIProjectClient.agents.create_version``) and persist their IDs via ``azd env set``.
 
 All Azure SDK imports are deferred into the functions so this module stays
 importable in mock mode / CI where those libraries (and Azure itself) are absent.
@@ -186,41 +187,52 @@ def create_foundry_agents(
     project_endpoint: str,
     chat_deployment: str,
 ) -> dict[str, str]:
-    """Create/refresh the 3 Foundry agents and persist their IDs. Idempotent."""
-    from azure.ai.agents import AgentsClient
+    """Create/refresh the 3 Foundry agents and persist their IDs. Idempotent.
+
+    Uses the **new** Azure AI Foundry Agent experience: agents are versioned
+    *Prompt Agents* created through ``AIProjectClient.agents.create_version`` on
+    the ``{endpoint}/api/projects/...`` resource (data-plane v1). This is the path
+    that surfaces the agents in the new Foundry portal, unlike the legacy
+    ``azure.ai.agents.AgentsClient`` assistants API (``asst_``-prefixed IDs) it
+    replaces.
+
+    The canonical identifier of a new-experience agent is its **name** (equal to
+    ``AgentDetails.id``); that stable name is what we persist and what the runtime
+    references. ``create_version`` is idempotent-friendly: re-running publishes a
+    new version of the same named agent rather than duplicating it.
+    """
+    from azure.ai.projects import AIProjectClient
+    from azure.ai.projects.models import PromptAgentDefinition
 
     from ..shared import get_credential
 
-    agents_client = AgentsClient(endpoint=project_endpoint, credential=get_credential())
-
-    # Idempotency: index existing agents by name.
-    existing: dict[str, str] = {}
-    try:
-        for agent in agents_client.list_agents():
-            name = getattr(agent, "name", None)
-            if name:
-                existing[name] = agent.id
-    except Exception as exc:  # pragma: no cover - live-only
-        _log(f"WARNING: could not list existing agents ({exc}); creating fresh.")
-
     ids: dict[str, str] = {}
-    for name, instructions in _AGENT_SPECS:
-        if name in existing:
-            agent_id = existing[name]
-            try:
-                agents_client.update_agent(
-                    agent_id, instructions=instructions, model=chat_deployment
-                )
-            except Exception as exc:  # pragma: no cover - live-only
-                _log(f"WARNING: update of {name} failed ({exc})")
-            _log(f"agent '{name}' already exists -> {agent_id} (updated)")
-        else:
-            agent = agents_client.create_agent(
-                model=chat_deployment, name=name, instructions=instructions
+    with AIProjectClient(endpoint=project_endpoint, credential=get_credential()) as project:
+        # Idempotency: which named agents already exist (for accurate logging).
+        existing: set[str] = set()
+        try:
+            for agent in project.agents.list():
+                name = getattr(agent, "name", None)
+                if name:
+                    existing.add(name)
+        except Exception as exc:  # pragma: no cover - live-only
+            _log(f"WARNING: could not list existing agents ({exc}); creating fresh.")
+
+        for name, instructions in _AGENT_SPECS:
+            version = project.agents.create_version(
+                agent_name=name,
+                definition=PromptAgentDefinition(
+                    model=chat_deployment, instructions=instructions
+                ),
             )
-            agent_id = agent.id
-            _log(f"created agent '{name}' -> {agent_id}")
-        ids[name] = agent_id
-        _azd_env_set(_AGENT_ID_ENV[name], agent_id)
+            # AgentVersionDetails.name is the stable agent id (== AgentDetails.id).
+            agent_id = getattr(version, "name", None) or name
+            revision = getattr(version, "version", None)
+            if name in existing:
+                _log(f"agent '{name}' already exists -> {agent_id} (published v{revision})")
+            else:
+                _log(f"created agent '{name}' -> {agent_id} (v{revision})")
+            ids[name] = agent_id
+            _azd_env_set(_AGENT_ID_ENV[name], agent_id)
 
     return ids

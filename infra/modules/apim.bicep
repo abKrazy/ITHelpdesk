@@ -240,6 +240,13 @@ var mcpTools = [
   }
 ]
 
+// @batchSize(1) forces these child resources to deploy SERIALLY (one at a time).
+// All 6 tools mutate the SAME parent MCP API (servicenow-mcp); deploying them in
+// parallel makes concurrent writers race on the parent API's ETag, producing
+// `PreconditionFailed: Resource was modified since last retrieval.` A partial
+// failure leaves the live APIM with only a subset of tools (a corrupted tool set).
+// Serializing removes the race so both a fresh `azd up` and re-provisions converge.
+@batchSize(1)
 resource mcpToolResources 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = [
   for tool in mcpTools: {
     parent: mcpApi

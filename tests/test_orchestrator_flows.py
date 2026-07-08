@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from helpdesk.agents.incident import IncidentAgent
-from helpdesk.orchestrator import Orchestrator
+from helpdesk.orchestrator import Orchestrator, TICKET_OFFER_MARKER
 
 
 @pytest.fixture()
@@ -67,27 +67,89 @@ def test_resolve_vpn_from_kb_without_ticket(orch: Orchestrator) -> None:
 # §3.2 — Create & assign incident (escalation): assignment group from KB.
 # ---------------------------------------------------------------------------
 def test_create_incident_pulls_assignment_group_from_kb(orch: Orchestrator) -> None:
-    """'Create a new incident' triages first, then creates + assigns from KB."""
+    """'Create a new incident' first deflects with KB steps when confident."""
     resp = orch.run("Unable to log into Epic. Create a new incident.")
 
-    assert resp.route == ["triage", "incident"], resp.route
-    # Triage does NOT claim to resolve — the user explicitly asked for a ticket.
-    assert resp.triage is not None and resp.triage.resolved is False
-    assert resp.incident is not None and resp.incident.action == "create"
-    assert resp.incident.ok is True
-    assert resp.incident.incident is not None
-    # Assignment group is pulled from the matching KB doc (unable-to-login.md).
-    assert resp.incident.incident["assignment_group"] == "Identity and Access Management"
-    assert resp.incident.incident["number"].startswith("INC")
-    # The KB reference is cited in the reply.
+    assert resp.route == ["triage"], resp.route
+    assert resp.triage is not None and resp.triage.has_confident_resolution is True
+    assert resp.incident is None
+    assert "login" in resp.reply.lower()
+    assert "Identity and Access Management" in resp.reply
+    assert TICKET_OFFER_MARKER in resp.reply
     assert "Referenced KB" in resp.reply
 
 
 def test_create_defaults_to_medium_urgency(orch: Orchestrator) -> None:
     """A newly created incident defaults to medium urgency (ServiceNow '2')."""
-    resp = orch.run("Unable to log into Epic. Create a new incident.")
+    offer = orch.run("Unable to log into Epic. Create a new incident.")
+    resp = orch.run(
+        "go ahead",
+        history=[
+            {"role": "user", "content": "Unable to log into Epic. Create a new incident."},
+            {"role": "assistant", "content": offer.reply},
+        ],
+    )
     assert resp.incident is not None and resp.incident.incident is not None
     assert resp.incident.incident["urgency"] == "2"
+
+
+def test_create_intent_with_confident_laptop_kb_deflects_without_incident() -> None:
+    """A create request with confident KB steps offers deflection before filing."""
+
+    class SpyIncidentAgent:
+        created = False
+
+        def create(self, *_args, **_kwargs):  # pragma: no cover - should not be called
+            self.created = True
+            raise AssertionError("incident create should not be called")
+
+        def lookup(self, *_args, **_kwargs):  # pragma: no cover
+            raise AssertionError("lookup should not be called")
+
+        def update(self, *_args, **_kwargs):  # pragma: no cover
+            raise AssertionError("update should not be called")
+
+    incident = SpyIncidentAgent()
+    resp = Orchestrator(incident_agent=incident).run(
+        "my laptop is running slow. please file a ticket."
+    )
+
+    assert resp.route == ["triage"], resp.route
+    assert resp.incident is None
+    assert incident.created is False
+    assert resp.triage is not None and resp.triage.has_confident_resolution is True
+    assert "Close unnecessary applications" in resp.reply
+    assert "Desktop Support" in resp.reply
+    assert TICKET_OFFER_MARKER in resp.reply
+
+
+def test_confirmation_after_offer_creates_from_original_problem(orch: Orchestrator) -> None:
+    """A follow-up confirmation creates from the original problem, not 'go ahead'."""
+    original = "my laptop is running slow. please file a ticket."
+    offer = orch.run(original)
+    resp = orch.run(
+        "go ahead",
+        history=[
+            {"role": "user", "content": original},
+            {"role": "assistant", "content": offer.reply},
+        ],
+    )
+
+    assert resp.route == ["triage", "incident"], resp.route
+    assert resp.incident is not None and resp.incident.action == "create"
+    assert resp.incident.incident is not None
+    assert resp.incident.incident["short_description"] == "my laptop is running slow."
+    assert resp.incident.incident["short_description"] != "go ahead"
+    assert resp.incident.incident["assignment_group"] == "Desktop Support"
+
+
+def test_create_intent_with_no_kb_match_creates_immediately(orch: Orchestrator) -> None:
+    """No confident KB hit means there is nothing useful to deflect with."""
+    resp = orch.run("Please file a ticket for qzxv jklm nprst.")
+
+    assert resp.route == ["triage", "incident"], resp.route
+    assert resp.triage is not None and resp.triage.has_kb_match is False
+    assert resp.incident is not None and resp.incident.action == "create"
 
 
 # ---------------------------------------------------------------------------

@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..orchestrator import Orchestrator
 
@@ -30,8 +31,14 @@ _CHAT_ERROR_REPLY = (
 )
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ChatRequest(BaseModel):
     message: str
+    history: list[ChatTurn] = Field(default_factory=list)
 
 
 class ChatReply(BaseModel):
@@ -64,7 +71,8 @@ def create_app() -> FastAPI:
     @app.post("/api/chat", response_model=ChatReply, response_model_exclude_none=True)
     async def chat(payload: ChatRequest) -> ChatReply:
         try:
-            result = _orchestrator().run(payload.message)
+            history = [turn.model_dump() for turn in payload.history[-10:]]
+            result = _orchestrator().run(payload.message, history=history)
         except Exception as exc:
             detail = _short_error_detail(exc)
             _LOGGER.exception("Chat orchestrator failed")

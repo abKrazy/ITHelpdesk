@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..agents.incident import IncidentAgent, IncidentResult
 from ..agents.prompts import ORCHESTRATOR_INSTRUCTIONS
@@ -28,6 +29,15 @@ _CREATE_RE = re.compile(
     re.IGNORECASE,
 )
 _UPDATE_RE = re.compile(r"\b(update|change|set|modify|escalate|lower)\b", re.IGNORECASE)
+_CONFIRM_RE = re.compile(
+    r"\b(go ahead|yes(?: please)?|yep|yeah|do it|please do|go for it)\b"
+    r"|\b(yes|please)\b.{0,20}\b(file|create|open|raise)\b"
+    r"|\b(file|create|open|raise)\b.{0,20}\bit\b"
+    r"|that didn'?t work|didn'?t help|still (?:not )?working|no luck|not resolved",
+    re.IGNORECASE,
+)
+
+TICKET_OFFER_MARKER = "reply 'go ahead' and I'll file a ticket"
 
 
 @dataclass
@@ -53,8 +63,11 @@ class Orchestrator:
         self._triage = triage_agent or TriageAgent()
         self._incident = incident_agent or IncidentAgent()
 
-    def run(self, user_message: str) -> OrchestratorResponse:
+    def run(
+        self, user_message: str, history: list[dict[str, str] | Any] | None = None
+    ) -> OrchestratorResponse:
         text = user_message.strip()
+        prior_turns = (history or [])[-10:]
         has_number = bool(_INC_RE.search(text))
         wants_create = bool(_CREATE_RE.search(text))
         wants_update = has_number and bool(_UPDATE_RE.search(text))
@@ -67,14 +80,38 @@ class Orchestrator:
         if has_number and not wants_create:
             return self._incident_only(text, "lookup")
 
-        # 3. Explicit "create incident" -> triage first (KB + assignment group),
-        #    then hand off to incident create (§3.2).
+        # 3. Confirmation of a prior KB deflection offer -> create from the
+        #    original problem, not from the short confirmation text.
+        original_problem = self._prior_ticket_offer_problem(prior_turns)
+        if original_problem and self._is_confirmation(text):
+            triage = self._triage.run(original_problem)
+            incident = self._incident.create(
+                original_problem,
+                assignment_group=triage.assignment_group,
+                short_description=self._short_desc(original_problem, triage),
+            )
+            return OrchestratorResponse(
+                reply=self._compose_create_reply(triage, incident),
+                route=["triage", "incident"],
+                triage=triage,
+                incident=incident,
+            )
+
+        # 4. Explicit "create incident" -> triage first. If the KB confidently
+        #    has steps, deflect with those steps and wait for confirmation.
         if wants_create:
-            triage = self._triage.run(text)
+            problem_text = self._problem_text_for_triage(text)
+            triage = self._triage.run(problem_text)
+            if triage.has_confident_resolution:
+                return OrchestratorResponse(
+                    reply=self._compose_deflection_offer(triage),
+                    route=["triage"],
+                    triage=triage,
+                )
             incident = self._incident.create(
                 text,
                 assignment_group=triage.assignment_group,
-                short_description=self._short_desc(text, triage),
+                short_description=self._short_desc(problem_text, triage),
             )
             reply = self._compose_create_reply(triage, incident)
             return OrchestratorResponse(
@@ -84,7 +121,7 @@ class Orchestrator:
                 incident=incident,
             )
 
-        # 4. General request -> triage; escalate only if it couldn't resolve and
+        # 5. General request -> triage; escalate only if it couldn't resolve and
         #    the user signalled they want a ticket (§3.1 -> §3.2).
         triage = self._triage.run(text)
         if triage.resolved or not triage.escalate_requested:
@@ -118,9 +155,73 @@ class Orchestrator:
         return first[:160] if first else text[:160]
 
     @staticmethod
+    def _problem_text_for_triage(text: str) -> str:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        non_create = [s for s in sentences if not _CREATE_RE.search(s)]
+        if non_create:
+            return " ".join(non_create)
+
+        cleaned = re.sub(
+            r"\b(?:please\s+)?(?:create|open|raise|log|file)\b.{0,20}"
+            r"\b(?:incident|ticket|case)\b\s*(?:for|about|regarding)?\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        return cleaned or text
+
+    @staticmethod
     def _compose_create_reply(triage: TriageResult, incident: IncidentResult) -> str:
         parts = []
         if triage.citations:
             parts.append(f"(Referenced KB: {'; '.join(triage.citations)})")
         parts.append(incident.message)
         return "\n".join(parts)
+
+    @staticmethod
+    def _compose_deflection_offer(triage: TriageResult) -> str:
+        top = triage.hits[0]
+        assignment_group = triage.assignment_group or "the appropriate support team"
+        parts = [
+            f"Here's how to resolve this (from '{top.title}'):",
+            top.resolution_steps,
+        ]
+        if triage.citations:
+            parts.append(f"(Referenced KB: {'; '.join(triage.citations)})")
+        parts.append(
+            f"If these steps don't resolve it, {TICKET_OFFER_MARKER} "
+            f"(assigned to {assignment_group})."
+        )
+        return "\n".join(parts)
+
+    @staticmethod
+    def _is_confirmation(text: str) -> bool:
+        return bool(_CONFIRM_RE.search(text.strip()))
+
+    @staticmethod
+    def _turn_role(turn: dict[str, str] | Any) -> str:
+        if isinstance(turn, dict):
+            return str(turn.get("role", "")).lower()
+        return str(getattr(turn, "role", "")).lower()
+
+    @staticmethod
+    def _turn_content(turn: dict[str, str] | Any) -> str:
+        if isinstance(turn, dict):
+            return str(turn.get("content", ""))
+        return str(getattr(turn, "content", ""))
+
+    @classmethod
+    def _prior_ticket_offer_problem(cls, history: list[dict[str, str] | Any]) -> str:
+        offer_index = None
+        for index in range(len(history) - 1, -1, -1):
+            if cls._turn_role(history[index]) == "assistant" and (
+                TICKET_OFFER_MARKER in cls._turn_content(history[index])
+            ):
+                offer_index = index
+                break
+        if offer_index is None:
+            return ""
+        for turn in reversed(history[:offer_index]):
+            if cls._turn_role(turn) == "user":
+                return cls._turn_content(turn).strip()
+        return ""

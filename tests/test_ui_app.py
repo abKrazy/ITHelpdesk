@@ -46,15 +46,38 @@ def test_chat_lookup_prompt(client: TestClient) -> None:
 
 
 def test_chat_create_prompt(client: TestClient) -> None:
-    """Prompt 2 — triage then create, with the KB assignment group."""
+    """Prompt 2 — triage offers KB steps before creating."""
     resp = client.post(
         "/api/chat", json={"message": "Unable to log into Epic. Create a new incident."}
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["route"] == ["triage", "incident"]
+    assert body["route"] == ["triage"]
     assert "Identity and Access Management" in body["reply"]
+    assert "reply 'go ahead'" in body["reply"]
+
+
+def test_chat_confirmation_uses_history(client: TestClient) -> None:
+    original = "my laptop is running slow. please file a ticket."
+    offer_resp = client.post("/api/chat", json={"message": original})
+    offer = offer_resp.json()["reply"]
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "go ahead",
+            "history": [
+                {"role": "user", "content": original},
+                {"role": "assistant", "content": offer},
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["route"] == ["triage", "incident"]
     assert "Created incident INC" in body["reply"]
+    assert "Desktop Support" in body["reply"]
 
 
 def test_chat_update_prompt(client: TestClient) -> None:
@@ -83,7 +106,7 @@ def test_chat_orchestrator_failure_returns_json_error(client: TestClient) -> Non
     """A downstream orchestrator failure is rendered as parseable chat JSON."""
 
     class FailingOrchestrator:
-        def run(self, _message: str) -> None:
+        def run(self, _message: str, history=None) -> None:
             raise RuntimeError("MCP endpoint unreachable")
 
     previous = app.state.orchestrator

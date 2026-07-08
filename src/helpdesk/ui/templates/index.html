@@ -33,13 +33,17 @@
     const form = document.getElementById('f');
     const input = document.getElementById('m');
     const send = document.getElementById('send');
+    const turns = [];
 
-    function add(text, cls) {
+    function add(text, cls, role) {
       const d = document.createElement('div');
       d.className = 'msg ' + cls;
       d.textContent = text;
       chat.appendChild(d);
       chat.scrollTop = chat.scrollHeight;
+      if (role) {
+        turns.push({ role, content: text });
+      }
       return d;
     }
 
@@ -69,17 +73,18 @@
       e.preventDefault();
       const message = input.value.trim();
       if (!message) return;
-      add(message, 'user');
+      const history = turns.slice(-10);
+      add(message, 'user', 'user');
       input.value = '';
       send.disabled = true;
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message })
+          body: JSON.stringify({ message, history })
         });
         const data = await readChatResponse(res);
-        add(data.reply || '(no response)', 'bot');
+        add(data.reply || '(no response)', 'bot', 'assistant');
         if (data.route && data.route.length) {
           const r = document.createElement('div');
           r.className = 'route';
@@ -87,7 +92,7 @@
           chat.appendChild(r);
         }
       } catch (err) {
-        add('Error contacting the agent: ' + err, 'bot');
+        add('Error contacting the agent: ' + err, 'bot', 'assistant');
       } finally {
         send.disabled = false;
         input.focus();

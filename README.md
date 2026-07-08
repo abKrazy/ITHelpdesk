@@ -52,7 +52,7 @@ exercise capabilities 2–4; capability 1 is any KB-answerable "how do I…" que
 | # | Capability | Example prompt | What happens |
 |---|------------|----------------|--------------|
 | 1 | **Triage & resolve from KB** | *"How do I reset my forgotten password?"* | Triage answers from the KB with steps + a citation. **No ticket is created.** |
-| 2 | **Create & assign incident** | *"Unable to log into Epic. Create a new incident."* | Triage picks the assignment group from the matching KB doc; incident agent creates the ticket assigned to that group. |
+| 2 | **Create & assign incident** | *"Unable to log into Epic. Create a new incident."* | Triage first offers confident KB troubleshooting steps; if the user confirms it is unresolved, the incident agent creates the ticket assigned to the KB assignment group. |
 | 3 | **Check ticket status** | *"lookup details for incident INC0000057"* | Incident agent fetches state, urgency, and assignment group. |
 | 4 | **Update ticket** | *"update urgency for INC0010027 to low"* | Incident agent resolves the number → `sys_id` and PATCHes urgency to `3` (Low). |
 
@@ -249,7 +249,7 @@ Run each sample prompt in the UI and confirm the result:
 | Prompt | Correct result |
 |--------|----------------|
 | `How do I reset my forgotten password?` | KB resolution steps + a citation to **Password Reset and Login Assistance**. **No incident is created.** |
-| `Unable to log into Epic. Create a new incident.` | A **new incident number** (`INC…`), assigned to **Identity and Access Management** (pulled from `unable-to-login.md`). |
+| `Unable to log into Epic. Create a new incident.` | KB login troubleshooting steps + an offer to file on confirmation, assigned to **Identity and Access Management** (pulled from `unable-to-login.md`). Reply `go ahead` if unresolved to create the incident. |
 | `lookup details for incident INC0000057` | Incident **INC0000057** details — state, urgency, assignment group. |
 | `update urgency for INC0010027 to low` | Confirmation that **INC0010027** urgency is now **Low** (ServiceNow code `3`). |
 

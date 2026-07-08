@@ -47,6 +47,15 @@ class TriageResult:
     def has_kb_match(self) -> bool:
         return bool(self.hits)
 
+    @property
+    def has_confident_resolution(self) -> bool:
+        """True when the top KB hit has actionable steps above the confidence bar."""
+        return bool(
+            self.hits
+            and self.hits[0].resolution_steps
+            and self.top_score >= _RESOLVE_THRESHOLD
+        )
+
 
 class TriageAgent:
     """Retrieval-grounded triage. Deterministic; safe to run offline."""
@@ -73,15 +82,16 @@ class TriageAgent:
         top = hits[0]
         citations = [f"{top.title} ({top.source})"]
 
-        # The user explicitly asked for a ticket: don't claim to have resolved it,
-        # but still hand back the assignment group from the matching KB article.
+        # The user explicitly asked for a ticket: don't claim the issue is
+        # resolved, but still return KB steps/score/assignment for the orchestrator
+        # to decide whether to deflect first or create immediately.
         if escalate:
             return TriageResult(
                 resolved=False,
                 answer=(
-                    f"Based on '{top.title}', this should be handled by "
-                    f"{top.assignment_group or 'the appropriate support team'}. "
-                    "Creating an incident."
+                    f"Based on '{top.title}', the recommended assignment group is "
+                    f"{top.assignment_group or 'the appropriate support team'}.\n"
+                    f"{top.resolution_steps}"
                 ),
                 assignment_group=top.assignment_group,
                 citations=citations,

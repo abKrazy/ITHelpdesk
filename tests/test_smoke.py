@@ -23,7 +23,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from helpdesk.orchestrator import Orchestrator  # noqa: E402
+from helpdesk.orchestrator import Orchestrator, TICKET_OFFER_MARKER  # noqa: E402
 
 
 def test_lookup_incident_status() -> None:
@@ -40,15 +40,14 @@ def test_lookup_incident_status() -> None:
 
 
 def test_create_incident_with_assignment_group() -> None:
-    """Prompt 2: triage (no resolve) -> incident create + assignment group."""
+    """Prompt 2: triage offers KB steps before creating."""
     resp = Orchestrator().run("Unable to log into Epic. Create a new incident.")
-    assert resp.route == ["triage", "incident"], resp.route
-    assert resp.triage is not None and resp.triage.resolved is False
-    assert resp.incident is not None and resp.incident.action == "create"
+    assert resp.route == ["triage"], resp.route
+    assert resp.triage is not None and resp.triage.has_confident_resolution is True
+    assert resp.incident is None
     # Assignment group is extracted from the matching KB doc (unable-to-login.md).
-    assert resp.incident.incident is not None
-    assert resp.incident.incident["assignment_group"] == "Identity and Access Management"
-    assert resp.incident.incident["number"].startswith("INC")
+    assert "Identity and Access Management" in resp.reply
+    assert TICKET_OFFER_MARKER in resp.reply
 
 
 def test_update_urgency_low() -> None:

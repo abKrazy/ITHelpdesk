@@ -4,6 +4,6 @@ Routes each user request to a specialist agent (triage / incident) and relays th
 result. It never resolves or modifies tickets itself (ARCHITECTURE.md §3).
 """
 
-from .orchestrator import Orchestrator, OrchestratorResponse
+from .orchestrator import Orchestrator, OrchestratorResponse, TICKET_OFFER_MARKER
 
-__all__ = ["Orchestrator", "OrchestratorResponse"]
+__all__ = ["Orchestrator", "OrchestratorResponse", "TICKET_OFFER_MARKER"]

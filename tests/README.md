@@ -50,11 +50,11 @@ HELPDESK_LIVE=1 pytest tests/test_smoke.py
 | File | Scope | Mode |
 |------|-------|------|
 | `conftest.py` | Bootstraps `HELPDESK_MOCK=1` + makes `src/` importable | — |
-| `test_smoke.py` | The 3 sample prompts through the Orchestrator (also runnable as a script: `python tests/test_smoke.py`) | mock |
-| `test_orchestrator_flows.py` | All **4 capabilities** + edge cases: KB resolve (no ticket), create+assign from KB, lookup, update, unknown incident, escalation handoff, ambiguous/empty prompts, urgency-label variants, intent detection | mock |
+| `test_smoke.py` | The 3 sample prompts through the Orchestrator (also runnable as a script: `python tests/test_smoke.py`); create-intent prompts with a confident KB match now deflect first and file only after confirmation. | mock |
+| `test_orchestrator_flows.py` | All **4 capabilities** + edge cases: KB resolve (no ticket), deflection-first create flow, lookup, update, unknown incident, escalation handoff, ambiguous/empty prompts, urgency-label variants, intent detection | mock |
 | `test_servicenow_client.py` | Live `src/servicenow` MCP client (create/get/update, PATCH-over-PUT, not-found, retry/no-retry) against a **fake MCP transport** | offline |
 | `test_openapi_import.py` | `assets/ServiceNow-OpenAPI-spec.json` parses and has the create/read/update ops + params the incident flow relies on | offline |
-| `test_ui_app.py` | FastAPI app via `TestClient`: `/healthz`, `/`, and `/api/chat` route/reply for the sample prompts | mock |
+| `test_ui_app.py` | FastAPI app via `TestClient`: `/healthz`, `/`, and `/api/chat` route/reply/history contract for the sample prompts | mock |
 | `test_kb_assets.py` | Every `assets/kb/*.md` doc has a title, resolution steps, and a Recommended Assignment Group | offline |
 
 ## Notes

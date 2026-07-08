@@ -37,6 +37,15 @@ param applicationInsightsConnectionString string
 @description('Foundry project endpoint the UI uses to reach the Orchestrator.')
 param aiProjectEndpoint string
 
+@description('Azure OpenAI endpoint used for chat and embedding model calls.')
+param openAiEndpoint string
+
+@description('Azure OpenAI embedding model deployment name.')
+param openAiEmbeddingDeployment string
+
+@description('Azure OpenAI chat model deployment name.')
+param openAiChatDeployment string
+
 @description('ServiceNow MCP endpoint URL (from APIM).')
 param serviceNowMcpEndpoint string
 
@@ -104,6 +113,18 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'AZURE_AI_PROJECT_ENDPOINT'
           value: aiProjectEndpoint
+        }
+        {
+          name: 'AZURE_OPENAI_ENDPOINT'
+          value: openAiEndpoint
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDING_DEPLOYMENT'
+          value: openAiEmbeddingDeployment
+        }
+        {
+          name: 'AZURE_OPENAI_CHAT_DEPLOYMENT'
+          value: openAiChatDeployment
         }
         {
           name: 'SERVICENOW_MCP_ENDPOINT'

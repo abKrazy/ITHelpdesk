@@ -227,6 +227,9 @@ module appservice './modules/appservice.bicep' = {
     applicationInsightsConnectionString: monitoring.outputs.applicationInsightsConnectionString
     // App settings the UI needs to reach the orchestrator + services.
     aiProjectEndpoint: foundry.outputs.projectEndpoint
+    openAiEndpoint: foundry.outputs.openAiEndpoint
+    openAiEmbeddingDeployment: embeddingModelDeploymentName
+    openAiChatDeployment: chatModelDeploymentName
     serviceNowMcpEndpoint: apim.outputs.mcpEndpointUrl
     searchEndpoint: search.outputs.endpoint
     searchIndexName: searchIndexName

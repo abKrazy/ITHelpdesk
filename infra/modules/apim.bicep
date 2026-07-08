@@ -189,12 +189,11 @@ resource mcpApi 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' = {
     sourceApiId: restApi.id
     mcpProperties: {
       transportType: 'streamable'
-      endpoints: [
-        {
-          name: 'mcp'
+      endpoints: {
+        mcp: {
           uriTemplate: '/mcp'
         }
-      ]
+      }
     }
   }
   dependsOn: [

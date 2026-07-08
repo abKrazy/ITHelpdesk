@@ -531,3 +531,13 @@ Authoritative sources:
 **By:** Trinity
 **What:** Incident user-facing replies now map ServiceNow incident state codes to friendly labels, while preserving raw `state` data and adding `state_label` alongside `urgency_label`.
 **Why:** ServiceNow Table API returns incident state as numeric codes; showing labels like `New` and `In Progress` makes lookup results readable without breaking fallback behavior for novel state codes.
+
+### 2026-07-08: Deflection-first triage for create-intent requests
+**By:** Trinity
+**What:** When a user asks to create/file/open/log a ticket and triage finds confident KB troubleshooting steps, the Orchestrator now returns those steps plus a confirmation offer and does not create the incident until a follow-up confirmation. The UI sends the last 10 prior chat turns as `{role, content}` history so confirmations can be tied to the previous offer and the original problem can be used for the incident short description.
+**Why:** The core product spec requires KB triage before incident creation. A stable offer marker in the assistant reply keeps confirmation detection deterministic and mock-safe while avoiding accidental ticket creation from a bare "yes" without a prior offer.
+
+### 2026-07-08: Use semantic rerankerScore for live triage confidence
+**By:** Trinity
+**What:** Live Azure AI Search triage confidence now uses `@search.rerankerScore` with a 2.0 threshold when semantic ranking is available, while mock/local search keeps the existing normalized keyword score threshold of 0.25. Search indexing also carries each article's full `resolution_steps` on every chunk so deflection shows clean steps regardless of which chunk matched.
+**Why:** Hybrid vector+keyword `@search.score` is an RRF ordering score around 0.01-0.03, so it cannot safely drive the live confidence gate calibrated for local 0-1 scores. Semantic reranker scores are on a 0-4 scale and are query-comparable enough for the deflection gate, with the local fallback preserving mock behavior.

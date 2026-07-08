@@ -20,9 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Owner: Trinity — Orchestrator + Foundry agents (Microsoft Agent Framework)
+# Owner: Trinity — Orchestrator + Foundry agents (Azure AI Agents SDK)
 orchestrator = [
-  "agent-framework>=1.0",         # Microsoft Agent Framework (PyPI: agent-framework, verified 1.10.0)
   "azure-ai-projects>=1.0.0b1",   # Foundry project client
   "azure-ai-agents>=1.0.0b1",     # Foundry agents (create/run)
   "openai>=1.40",

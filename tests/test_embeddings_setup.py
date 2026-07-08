@@ -48,9 +48,11 @@ def test_search_index_uses_same_dimension_constant(monkeypatch: pytest.MonkeyPat
 
     index = setup._build_index_definition("it-helpdesk-kb")
     vector_field = next(field for field in index.fields if field.name == "content_vector")
+    resolution_field = next(field for field in index.fields if field.name == "resolution_steps")
 
     assert setup.EMBEDDING_DIMENSIONS is embeddings.EMBEDDING_DIMENSIONS
     assert vector_field.vector_search_dimensions == embeddings.EMBEDDING_DIMENSIONS
+    assert resolution_field.type == "Edm.String"
 
 
 def test_upload_result_failures_are_loud() -> None:

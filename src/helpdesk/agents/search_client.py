@@ -30,6 +30,7 @@ class KbHit:
     score: float
     content: str
     resolution_steps: str
+    reranker_score: float | None = None
 
 
 class SearchClient(Protocol):
@@ -124,23 +125,43 @@ class AzureAISearchClient:
         vquery = VectorizedQuery(vector=vector, k_nearest_neighbors=top, fields="content_vector")
         results = client.search(
             search_text=query,
+            query_type="semantic",
+            semantic_configuration_name="kb-semantic",
             vector_queries=[vquery],
-            top=top,
-            select=["doc_id", "title", "source", "assignment_group", "content"],
+            top=max(top * 3, top),
+            select=[
+                "doc_id",
+                "title",
+                "source",
+                "assignment_group",
+                "content",
+                "resolution_steps",
+            ],
         )
         hits: list[KbHit] = []
+        seen_sources: set[str] = set()
         for r in results:
+            source = r.get("source", "")
+            dedupe_key = source or r.get("doc_id", "")
+            if dedupe_key in seen_sources:
+                continue
+            seen_sources.add(dedupe_key)
+            raw_reranker = r.get("@search.rerankerScore")
+            reranker_score = float(raw_reranker) if raw_reranker is not None else None
             hits.append(
                 KbHit(
                     doc_id=r.get("doc_id", ""),
                     title=r.get("title", ""),
-                    source=r.get("source", ""),
+                    source=source,
                     assignment_group=r.get("assignment_group", ""),
                     score=float(r.get("@search.score", 0.0)),
                     content=r.get("content", ""),
-                    resolution_steps=r.get("content", ""),
+                    resolution_steps=r.get("resolution_steps") or r.get("content", ""),
+                    reranker_score=reranker_score,
                 )
             )
+            if len(hits) >= top:
+                break
         return hits
 
 

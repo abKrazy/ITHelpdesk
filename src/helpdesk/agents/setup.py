@@ -58,6 +58,7 @@ def _build_index_definition(index_name: str):
             facetable=True,
         ),
         SearchableField(name="content", type=SearchFieldDataType.String),
+        SearchableField(name="resolution_steps", type=SearchFieldDataType.String),
         SearchField(
             name="content_vector",
             type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
@@ -145,6 +146,7 @@ def build_search_index(
                     "source": doc.source,
                     "assignment_group": doc.assignment_group,
                     "content": chunk,
+                    "resolution_steps": doc.resolution_steps,
                     "content_vector": vector,
                 }
             )

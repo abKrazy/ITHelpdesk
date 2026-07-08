@@ -20,8 +20,11 @@ from dataclasses import dataclass, field
 from .prompts import TRIAGE_INSTRUCTIONS
 from .search_client import KbHit, SearchClient, get_search_client
 
-# Below this normalised score we treat the KB as having no confident answer.
+# Below this normalised local score we treat the KB as having no confident answer.
 _RESOLVE_THRESHOLD = 0.25
+# Azure AI Search semantic reranker scores are on a 0..4 scale and are more
+# comparable across live hybrid queries than RRF @search.score values.
+_SEMANTIC_RESOLVE_THRESHOLD = 2.0
 
 # Phrases that signal the user explicitly wants a ticket rather than self-help.
 _ESCALATE_RE = re.compile(
@@ -50,11 +53,13 @@ class TriageResult:
     @property
     def has_confident_resolution(self) -> bool:
         """True when the top KB hit has actionable steps above the confidence bar."""
-        return bool(
-            self.hits
-            and self.hits[0].resolution_steps
-            and self.top_score >= _RESOLVE_THRESHOLD
-        )
+        return bool(self.hits and self.hits[0].resolution_steps and _is_confident(self.hits[0]))
+
+
+def _is_confident(hit: KbHit) -> bool:
+    if hit.reranker_score is not None:
+        return hit.reranker_score >= _SEMANTIC_RESOLVE_THRESHOLD
+    return hit.score >= _RESOLVE_THRESHOLD
 
 
 class TriageAgent:
@@ -100,7 +105,7 @@ class TriageAgent:
                 hits=hits,
             )
 
-        if top.score >= _RESOLVE_THRESHOLD and top.resolution_steps:
+        if _is_confident(top) and top.resolution_steps:
             answer = (
                 f"Here's how to resolve this (from '{top.title}'):\n"
                 f"{top.resolution_steps}"

@@ -1,0 +1,14 @@
+{
+  "resourcesResourceGroups": "rg-",
+  "operationalInsightsWorkspaces": "log-",
+  "insightsComponents": "appi-",
+  "managedIdentityUserAssignedIdentities": "id-",
+  "keyVaultVaults": "kv",
+  "storageStorageAccounts": "st",
+  "searchSearchServices": "srch-",
+  "cognitiveServicesAccounts": "aif-",
+  "aiFoundryProjects": "proj-",
+  "apiManagementService": "apim-",
+  "webServerFarms": "plan-",
+  "webSitesAppService": "app-"
+}

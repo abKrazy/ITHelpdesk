@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IT Helpdesk Agent</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, Segoe UI, Arial, sans-serif; margin: 0; background: #f3f4f6; }
+    header { background: #0f172a; color: #fff; padding: 14px 20px; font-weight: 600; }
+    #chat { max-width: 760px; margin: 20px auto; padding: 0 16px; }
+    .msg { padding: 10px 14px; border-radius: 12px; margin: 8px 0; white-space: pre-wrap; line-height: 1.4; }
+    .user { background: #2563eb; color: #fff; margin-left: 20%; }
+    .bot { background: #fff; border: 1px solid #e5e7eb; margin-right: 20%; }
+    .route { font-size: 11px; color: #6b7280; margin: 2px 0 10px 0; }
+    form { display: flex; gap: 8px; max-width: 760px; margin: 0 auto 24px; padding: 0 16px; }
+    input { flex: 1; padding: 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 15px; }
+    button { padding: 12px 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+  </style>
+</head>
+<body>
+  <header>ServiceNow IT Helpdesk Agent</header>
+  <div id="chat">
+    <div class="msg bot">Hi! Describe your IT issue, look up an incident (e.g. INC0000057), or ask me to create or update a ticket.</div>
+  </div>
+  <form id="f">
+    <input id="m" autocomplete="off" placeholder="Type your request…" required />
+    <button id="send" type="submit">Send</button>
+  </form>
+  <script>
+    const chat = document.getElementById('chat');
+    const form = document.getElementById('f');
+    const input = document.getElementById('m');
+    const send = document.getElementById('send');
+
+    function add(text, cls) {
+      const d = document.createElement('div');
+      d.className = 'msg ' + cls;
+      d.textContent = text;
+      chat.appendChild(d);
+      chat.scrollTop = chat.scrollHeight;
+      return d;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      add(message, 'user');
+      input.value = '';
+      send.disabled = true;
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        add(data.reply || '(no response)', 'bot');
+        if (data.route && data.route.length) {
+          const r = document.createElement('div');
+          r.className = 'route';
+          r.textContent = 'routed via: ' + data.route.join(' \u2192 ');
+          chat.appendChild(r);
+        }
+      } catch (err) {
+        add('Error contacting the agent: ' + err, 'bot');
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    });
+  </script>
+</body>
+</html>

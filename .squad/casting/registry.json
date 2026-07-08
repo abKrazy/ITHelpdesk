@@ -1,0 +1,39 @@
+{
+  "agents": {
+    "lead-architect": {
+      "persistent_name": "Morpheus",
+      "universe": "The Matrix",
+      "created_at": "2026-07-08T10:38:03-05:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "infra-platform": {
+      "persistent_name": "Tank",
+      "universe": "The Matrix",
+      "created_at": "2026-07-08T10:38:03-05:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "ai-agent-engineer": {
+      "persistent_name": "Trinity",
+      "universe": "The Matrix",
+      "created_at": "2026-07-08T10:38:03-05:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "backend-integration": {
+      "persistent_name": "Switch",
+      "universe": "The Matrix",
+      "created_at": "2026-07-08T10:38:03-05:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "qa-docs": {
+      "persistent_name": "Dozer",
+      "universe": "The Matrix",
+      "created_at": "2026-07-08T10:38:03-05:00",
+      "legacy_named": false,
+      "status": "active"
+    }
+  }
+}

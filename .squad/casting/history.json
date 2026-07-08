@@ -1,0 +1,22 @@
+{
+  "universe_usage_history": [
+    {
+      "universe": "The Matrix",
+      "assignment_id": "ithelpdesk-2026-07-08",
+      "used_at": "2026-07-08T10:38:03-05:00"
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "ithelpdesk-2026-07-08": {
+      "universe": "The Matrix",
+      "agents": {
+        "lead-architect": "Morpheus",
+        "infra-platform": "Tank",
+        "ai-agent-engineer": "Trinity",
+        "backend-integration": "Switch",
+        "qa-docs": "Dozer"
+      },
+      "created_at": "2026-07-08T10:38:03-05:00"
+    }
+  }
+}

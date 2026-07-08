@@ -1,0 +1,36 @@
+# Deploy-root dependency manifest for the App Service UI.
+# =====================================================================
+# azure.yaml deploys ./src; Oryx builds this file and puts ./src on
+# sys.path, so the app starts as `helpdesk.ui.app:app` (appservice.bicep).
+#
+# This is the COMPLETE live import closure for the UI process:
+#   helpdesk.ui.app -> orchestrator -> triage/incident agents ->
+#   azure-identity / azure-ai-projects / azure-search-documents / mcp,
+#   plus the ServiceNow MCP client (src/servicenow) and the gunicorn/uvicorn
+#   server used by the start command.
+# Version constraints mirror pyproject.toml so mock and live match.
+
+# --- Web server + UI (pyproject [ui] + appservice.bicep start command) ---
+fastapi>=0.111
+uvicorn[standard]>=0.30
+gunicorn>=22.0
+jinja2>=3.1
+
+# --- Shared runtime (pyproject [project].dependencies) ---
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8
+python-dotenv>=1.0
+pydantic>=2.7
+
+# --- Orchestrator + Foundry agents (pyproject [orchestrator]) ---
+agent-framework>=1.0
+azure-ai-projects>=1.0.0b1
+azure-ai-agents>=1.0.0b1
+openai>=1.40
+
+# --- Triage KB grounding / AI Search indexing (pyproject [agents]) ---
+azure-search-documents>=11.5.0
+
+# --- ServiceNow / APIM MCP client (pyproject [servicenow]) ---
+httpx>=0.27
+mcp>=1.0

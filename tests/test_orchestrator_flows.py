@@ -1,0 +1,229 @@
+"""End-to-end Orchestrator behaviour across ALL 4 user capabilities + edge cases.
+
+Runs entirely in mock mode (``HELPDESK_MOCK=1`` — set by ``conftest.py``): triage
+searches the local KB (``assets/kb/*.md``) and the incident agent uses the
+in-memory ServiceNow mock seeded with the sample incidents. No live Azure or
+ServiceNow is required, so the same routing/reply contract the UI depends on is
+validated offline.
+
+Capabilities under test (ARCHITECTURE.md §3):
+  * §3.1 Triage & RESOLVE from KB (no ticket created)   -> test_resolve_*
+  * §3.2 Create & assign incident (escalation)          -> test_create_*
+  * §3.3 Check ticket status                             -> test_lookup_*
+  * §3.4 Update ticket                                   -> test_update_*
+
+Plus failure / edge modes: unknown incident, unresolved-then-escalate handoff,
+ambiguous/empty prompts, and urgency-label variants.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from helpdesk.agents.incident import IncidentAgent
+from helpdesk.orchestrator import Orchestrator
+
+
+@pytest.fixture()
+def orch() -> Orchestrator:
+    """A fresh mock-backed Orchestrator per test (isolated ServiceNow state)."""
+    return Orchestrator()
+
+
+# ---------------------------------------------------------------------------
+# §3.1 — Triage & RESOLVE from the KB (the 4th flow): NO ticket is created.
+# ---------------------------------------------------------------------------
+def test_resolve_password_reset_from_kb_without_ticket(orch: Orchestrator) -> None:
+    """A KB-answerable question resolves from the KB and creates NO incident."""
+    resp = orch.run("How do I reset my forgotten password?")
+
+    # Routed to triage only — the incident agent is never engaged.
+    assert resp.route == ["triage"], resp.route
+    assert resp.incident is None, "no incident should be created for a KB resolve"
+
+    # Triage confidently resolved from the knowledge base...
+    assert resp.triage is not None
+    assert resp.triage.resolved is True
+    # ...with resolution steps AND a citation surfaced to the user.
+    assert resp.triage.citations, "a KB citation must be returned"
+    assert "Password Reset" in resp.triage.citations[0]
+    assert "self-service password reset" in resp.reply.lower()
+    # The KB resolution steps are echoed back.
+    assert "resolve this" in resp.reply.lower()
+
+
+def test_resolve_vpn_from_kb_without_ticket(orch: Orchestrator) -> None:
+    """A second KB-answerable question (VPN) also resolves without a ticket."""
+    resp = orch.run("My VPN keeps disconnecting, how do I fix it?")
+
+    assert resp.route == ["triage"], resp.route
+    assert resp.incident is None
+    assert resp.triage is not None and resp.triage.resolved is True
+    assert "VPN Connectivity" in resp.triage.citations[0]
+    assert "reconnect vpn" in resp.reply.lower()
+
+
+# ---------------------------------------------------------------------------
+# §3.2 — Create & assign incident (escalation): assignment group from KB.
+# ---------------------------------------------------------------------------
+def test_create_incident_pulls_assignment_group_from_kb(orch: Orchestrator) -> None:
+    """'Create a new incident' triages first, then creates + assigns from KB."""
+    resp = orch.run("Unable to log into Epic. Create a new incident.")
+
+    assert resp.route == ["triage", "incident"], resp.route
+    # Triage does NOT claim to resolve — the user explicitly asked for a ticket.
+    assert resp.triage is not None and resp.triage.resolved is False
+    assert resp.incident is not None and resp.incident.action == "create"
+    assert resp.incident.ok is True
+    assert resp.incident.incident is not None
+    # Assignment group is pulled from the matching KB doc (unable-to-login.md).
+    assert resp.incident.incident["assignment_group"] == "Identity and Access Management"
+    assert resp.incident.incident["number"].startswith("INC")
+    # The KB reference is cited in the reply.
+    assert "Referenced KB" in resp.reply
+
+
+def test_create_defaults_to_medium_urgency(orch: Orchestrator) -> None:
+    """A newly created incident defaults to medium urgency (ServiceNow '2')."""
+    resp = orch.run("Unable to log into Epic. Create a new incident.")
+    assert resp.incident is not None and resp.incident.incident is not None
+    assert resp.incident.incident["urgency"] == "2"
+
+
+# ---------------------------------------------------------------------------
+# §3.3 — Check ticket status (lookup an existing incident).
+# ---------------------------------------------------------------------------
+def test_lookup_incident_status(orch: Orchestrator) -> None:
+    resp = orch.run("lookup details for incident INC0000057")
+
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None
+    assert resp.incident.action == "lookup"
+    assert resp.incident.ok is True
+    assert resp.incident.incident is not None
+    assert resp.incident.incident["number"] == "INC0000057"
+    assert resp.incident.incident["assignment_group"] == "End User Computing"
+    # State/urgency are surfaced to the user.
+    assert "State:" in resp.reply
+
+
+# ---------------------------------------------------------------------------
+# §3.4 — Update ticket (change urgency to low -> '3').
+# ---------------------------------------------------------------------------
+def test_update_urgency_to_low(orch: Orchestrator) -> None:
+    resp = orch.run("update urgency for INC0010027 to low")
+
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None
+    assert resp.incident.action == "update"
+    assert resp.incident.ok is True
+    assert resp.incident.fields_changed.get("urgency") == "3"
+    assert resp.incident.incident is not None
+    assert resp.incident.incident["urgency"] == "3"
+    assert "Low" in resp.reply
+
+
+# ---------------------------------------------------------------------------
+# Edge cases & failure modes.
+# ---------------------------------------------------------------------------
+def test_lookup_unknown_incident_reports_not_found(orch: Orchestrator) -> None:
+    """A non-existent number surfaces IncidentNotFound as a clean 'not found'."""
+    resp = orch.run("lookup details for incident INC9999999")
+
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None
+    assert resp.incident.action == "lookup"
+    assert resp.incident.ok is False
+    assert "not found" in resp.reply.lower()
+
+
+def test_update_unknown_incident_reports_not_found(orch: Orchestrator) -> None:
+    resp = orch.run("update urgency for INC9999999 to low")
+
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None
+    assert resp.incident.ok is False
+    assert "not found" in resp.reply.lower()
+
+
+def test_update_without_a_recognisable_field_is_reported(orch: Orchestrator) -> None:
+    """An update that names an incident but no change is handled gracefully."""
+    resp = orch.run("update INC0010027")
+
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None
+    assert resp.incident.action == "update"
+    assert resp.incident.ok is False
+    assert "couldn't tell" in resp.reply.lower()
+
+
+def test_unresolved_triage_escalates_to_incident_create(orch: Orchestrator) -> None:
+    """Escalation handoff: unresolved triage + escalate wording -> create."""
+    resp = orch.run("Escalate my Epic login problem")
+
+    assert resp.route == ["triage", "incident"], resp.route
+    assert resp.triage is not None
+    assert resp.triage.resolved is False
+    assert resp.triage.escalate_requested is True
+    # An incident is created and assigned (assignment group comes from the KB).
+    assert resp.incident is not None
+    assert resp.incident.action == "create"
+    assert resp.incident.ok is True
+    assert resp.incident.incident is not None
+    assert resp.incident.incident["assignment_group"]  # non-empty
+
+
+def test_ambiguous_prompt_does_not_create_a_ticket(orch: Orchestrator) -> None:
+    """A weak/ambiguous match neither resolves nor silently opens a ticket."""
+    resp = orch.run("The quarterly TPS report is purple")
+
+    assert resp.route == ["triage"], resp.route
+    assert resp.incident is None, "must not auto-create a ticket on a weak match"
+    assert resp.triage is not None and resp.triage.resolved is False
+    # It offers to escalate rather than fabricating a resolution.
+    assert "incident" in resp.reply.lower()
+
+
+def test_empty_prompt_is_handled_without_crashing(orch: Orchestrator) -> None:
+    resp = orch.run("")
+    assert resp.route == ["triage"], resp.route
+    assert resp.incident is None
+    assert resp.triage is not None and resp.triage.resolved is False
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected_code", "expected_label"),
+    [
+        ("update urgency for INC0010027 to low", "3", "Low"),
+        ("set urgency for INC0000057 to medium", "2", "Medium"),
+        ("change urgency for INC0000057 to high", "1", "High"),
+        ("set urgency for INC0000057 to critical", "1", "High"),
+        ("set urgency for INC0000057 to moderate", "2", "Medium"),
+    ],
+)
+def test_update_urgency_label_variants(
+    orch: Orchestrator, prompt: str, expected_code: str, expected_label: str
+) -> None:
+    """Urgency label synonyms map to the correct ServiceNow numeric code."""
+    resp = orch.run(prompt)
+    assert resp.route == ["incident"], resp.route
+    assert resp.incident is not None and resp.incident.ok is True
+    assert resp.incident.fields_changed.get("urgency") == expected_code
+    assert expected_label in resp.reply
+
+
+# ---------------------------------------------------------------------------
+# IncidentAgent intent detection (deterministic router used online + offline).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("prompt", "intent"),
+    [
+        ("lookup details for incident INC0000057", "lookup"),
+        ("update urgency for INC0010027 to low", "update"),
+        ("Unable to log into Epic. Create a new incident.", "create"),
+        ("show me INC0000057", "lookup"),
+        ("open a ticket for a broken printer", "create"),
+    ],
+)
+def test_incident_agent_detects_intent(prompt: str, intent: str) -> None:
+    assert IncidentAgent.detect_intent(prompt) == intent

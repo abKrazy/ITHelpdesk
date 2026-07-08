@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+#
+# Azure Developer CLI (azd) project manifest — ONE-CLICK DEPLOY CONTRACT
+# =====================================================================
+# `azd up` provisions ALL Azure resources (infra/main.bicep), deploys the
+# services below, then runs the postprovision hook to seed the KB into
+# Storage + AI Search and create the Foundry agents.
+#
+# Owners:
+#   - This file & overall azd shape ....... Morpheus (Lead)
+#   - infra/ Bicep .......................... Tank
+#   - src/orchestrator, src/agents .......... Trinity
+#   - src/servicenow (MCP client/config) .... Switch
+#   - src/helpdesk/ui ....................... Trinity (UI) / Morpheus (shape)
+#   - scripts/ hooks ........................ Tank (infra plumbing) + Trinity (agent creation)
+#
+name: servicenow-it-helpdesk-agent
+metadata:
+  template: servicenow-it-helpdesk-agent@0.1.0
+
+# ---------------------------------------------------------------------------
+# Inputs azd will prompt for on `azd up` (the ONLY interactive prompts):
+#   1. Azure login            -> handled by azd/`az login`
+#   2. Subscription           -> AZURE_SUBSCRIPTION_ID (azd built-in prompt)
+#   3. Region                 -> AZURE_LOCATION (azd built-in prompt)
+#   4. ServiceNow instance URL-> SERVICENOW_INSTANCE_URL (default: assets value)
+#   5. ServiceNow username    -> SERVICENOW_USERNAME
+#   6. ServiceNow password    -> SERVICENOW_PASSWORD (secured; never echoed)
+#
+# 4-6 are collected by the preprovision hook (scripts/preprovision.*) which
+# calls `azd env set`. main.parameters.json binds them into Bicep params.
+# ---------------------------------------------------------------------------
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+services:
+  # The customer-facing chat UI on Azure App Service. End users talk to the
+  # UI, which forwards to the Orchestrator (Foundry hosted agent).
+  ui:
+    # Deploy the whole ./src tree so BOTH runtime packages (helpdesk + servicenow)
+    # ship in the package. Oryx builds from src/requirements.txt and puts ./src on
+    # sys.path, so the app loads as `helpdesk.ui.app:app` (see appservice.bicep).
+    project: ./src
+    language: python
+    host: appservice
+    # host resource is tagged azd-service-name: 'ui' in infra/modules/appservice.bicep
+
+  # NOTE: The Orchestrator is deployed as a Foundry *Hosted Agent*, not a
+  # standalone azd host. Its code lives in ./src/orchestrator and is packaged +
+  # registered by the postprovision hook (scripts/postprovision.*). It is
+  # intentionally NOT listed as an azd `service` because Foundry hosted agents
+  # are created via the Foundry SDK/control plane, not `azd deploy`.
+
+hooks:
+  # Collect ServiceNow inputs (URL/username/password) before provisioning so
+  # they can flow into Bicep params + Key Vault. Idempotent: skips prompts if
+  # values already set in the azd environment.
+  preprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/preprovision.ps1
+      interactive: true
+      continueOnError: false
+    posix:
+      shell: sh
+      run: ./scripts/preprovision.sh
+      interactive: true
+      continueOnError: false
+
+  # After infra exists: upload KB docs to Storage, (re)build the AI Search
+  # index, and create/refresh the 3 Foundry agents (orchestrator, triage,
+  # incident). Writes agent IDs back to the azd environment.
+  postprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/postprovision.ps1
+      interactive: false
+      continueOnError: false
+    posix:
+      shell: sh
+      run: ./scripts/postprovision.sh
+      interactive: false
+      continueOnError: false

@@ -1,0 +1,361 @@
+# ServiceNow IT Helpdesk AI Agent — Azure Solution Accelerator
+
+A **one-click (`azd up`)** Azure Solution Accelerator for a **ServiceNow ticketing
+AI agent**. End users chat with a web UI; an **Orchestrator** agent routes each
+request to specialist agents that (1) try to resolve it from a knowledge base and
+(2) if it can't be resolved, **create / assign / check / update** a ServiceNow
+incident.
+
+Built on **Azure AI Foundry** with the **Microsoft Agent Framework**, fronted by
+**Azure API Management** (which exposes the ServiceNow Table API as MCP tools),
+and deployed end-to-end with the **Azure Developer CLI (`azd`)**.
+
+> 📐 [`ARCHITECTURE.md`](./ARCHITECTURE.md) is the source of truth for components,
+> data flows, and cross-component contracts. This README is the **deploy & run**
+> guide for a fresh clone.
+
+---
+
+## What it is
+
+```mermaid
+flowchart TD
+    User([End User]) -->|chat| UI[UI - Azure App Service<br/>src/helpdesk/ui]
+    UI -->|invoke| ORCH[Orchestrator Agent<br/>Foundry Hosted Agent<br/>src/helpdesk/orchestrator]
+
+    subgraph Foundry[Azure AI Foundry Project]
+        ORCH -->|handoff| TRIAGE[Triage Agent<br/>src/helpdesk/agents]
+        ORCH -->|handoff| INC[Incident Agent<br/>src/helpdesk/agents]
+    end
+
+    TRIAGE -->|grounded search| SEARCH[(Azure AI Search<br/>index: it-helpdesk-kb)]
+    SEARCH -. indexed from .- STG[(Azure Storage<br/>container: kb)]
+    INC -->|MCP tools| APIM[API Management - Developer tier<br/>MCP endpoint<br/>infra: apim.bicep]
+    APIM -->|Table API + Basic auth| SNOW[(ServiceNow Instance<br/>dev283128)]
+    APIM -.reads creds.-> KV[(Key Vault)]
+
+    ORCH -.identity.-> MI[User-Assigned Managed Identity]
+    UI -.identity.-> MI
+    MI -.RBAC.-> SEARCH & STG & KV & Foundry
+
+    subgraph Obs[Observability]
+        AI[Application Insights + Log Analytics]
+    end
+    UI & Foundry & APIM -.telemetry.-> AI
+```
+
+### The 4 capabilities (with the sample prompts)
+
+The three prompts in [`assets/Sample-Prompts.txt`](./assets/Sample-Prompts.txt)
+exercise capabilities 2–4; capability 1 is any KB-answerable "how do I…" question.
+
+| # | Capability | Example prompt | What happens |
+|---|------------|----------------|--------------|
+| 1 | **Triage & resolve from KB** | *"How do I reset my forgotten password?"* | Triage answers from the KB with steps + a citation. **No ticket is created.** |
+| 2 | **Create & assign incident** | *"Unable to log into Epic. Create a new incident."* | Triage picks the assignment group from the matching KB doc; incident agent creates the ticket assigned to that group. |
+| 3 | **Check ticket status** | *"lookup details for incident INC0000057"* | Incident agent fetches state, urgency, and assignment group. |
+| 4 | **Update ticket** | *"update urgency for INC0010027 to low"* | Incident agent resolves the number → `sys_id` and PATCHes urgency to `3` (Low). |
+
+---
+
+## Prerequisites (read this in full — it prevents 90% of deploy failures)
+
+### 1. Tooling + minimum versions
+
+| Tool | Minimum version | Check | Install |
+|------|-----------------|-------|---------|
+| **Azure Developer CLI (`azd`)** | 1.9.0+ | `azd version` | <https://aka.ms/azd-install> |
+| **Azure CLI (`az`)** | 2.60+ | `az version` | <https://aka.ms/azure-cli> |
+| **Python** | 3.11+ | `python --version` | <https://www.python.org/downloads/> |
+| **git** | 2.30+ | `git --version` | <https://git-scm.com/downloads> |
+| **Bicep** | bundled with `az`/`azd` | `az bicep version` | `az bicep install` |
+
+`azd` builds and deploys the Python UI, so a working **Python 3.11+** on `PATH`
+is required on the deploying machine.
+
+### 2. Azure subscription + RBAC roles the deploying user needs
+
+`infra/main.bicep` is **subscription-scoped**: `azd up` **creates the resource
+group**, all resources, **and role assignments** wiring the managed identity (and
+optionally you) to Key Vault, Storage, AI Search, and AI Foundry.
+
+Creating role assignments requires `Microsoft.Authorization/roleAssignments/write`.
+Therefore the deploying identity needs **one** of:
+
+- **Owner** on the target subscription (simplest — includes RG creation + role
+  assignment), **or**
+- **Contributor** **plus** **User Access Administrator** (or **Role Based Access
+  Control Administrator**) on the subscription.
+
+> ⚠️ Plain **Contributor is NOT enough** — it can create the resources but will
+> fail on the role assignments in `keyvault.bicep`, `storage.bicep`,
+> `search.bicep`, and `foundry.bicep` with an authorization error.
+
+**Every resource `azd up` creates** (single resource group `rg-<env>`) and the
+roles it assigns:
+
+| Resource | Azure type / SKU | Role assignments created (→ managed identity, and optionally you) |
+|----------|------------------|-------------------------------------------------------------------|
+| Resource Group | `rg-<environmentName>` | — (creation needs subscription rights) |
+| Managed Identity | `Microsoft.ManagedIdentity/userAssignedIdentities` | The principal all other roles are granted to |
+| Log Analytics + App Insights | `Microsoft.OperationalInsights/workspaces`, `Microsoft.Insights/components` | — |
+| Key Vault (+ 2 secrets) | `Microsoft.KeyVault/vaults` (standard) | **Key Vault Secrets User** |
+| Storage (+ `kb` container) | `Microsoft.Storage/storageAccounts` (Standard, Hot) | **Storage Blob Data Contributor** |
+| AI Search | `Microsoft.Search/searchServices` (**basic**) | **Search Index Data Contributor** + **Search Service Contributor** |
+| **Azure AI Foundry** (+ project + 2 model deployments) | `Microsoft.CognitiveServices/accounts` (kind `AIServices`, S0) | **Azure AI Developer** + **Cognitive Services OpenAI User** (granted to the managed identity **and** optionally you) · **Cognitive Services User** (managed identity **only**) |
+| **API Management** | `Microsoft.ApiManagement/service` (**Developer** tier) | — (imports the ServiceNow OpenAPI spec + MCP endpoint) |
+| App Service Plan + Web App (UI) | `Microsoft.Web/serverfarms` (**B1**) + `Microsoft.Web/sites` | — |
+
+*(Role IDs are pinned in the module Bicep — e.g. `infra/modules/keyvault.bicep`,
+`storage.bicep`, `search.bicep`, `foundry.bicep`.)*
+
+### 3. Azure AI Foundry model deployment quota
+
+`infra/modules/foundry.bicep` (via `infra/main.bicep` defaults) deploys **two
+models** into the Foundry account in your chosen region:
+
+| Model | Deployment name | SKU / type | Capacity (TPM) | Default in |
+|-------|-----------------|-----------|----------------|-----------|
+| **`gpt-4o`** (chat) | `gpt-4o` | `GlobalStandard` | **30** (30K tokens/min) | `main.bicep` `chatModelName`/`chatModelDeploymentName` |
+| **`text-embedding-3-large`** (embeddings) | `text-embedding-3-large` | `Standard` | **30** (30K tokens/min) | `main.bicep` `embeddingModelName`/`embeddingModelDeploymentName` |
+
+Model **version** is not pinned; Foundry uses the current default
+(`versionUpgradeOption: OnceNewDefaultVersionAvailable`).
+
+**You must have quota for both models, at these capacities, in your chosen
+region.** To check / request:
+
+```bash
+# List available models + your quota in a region
+az cognitiveservices account list-models --name <foundry> --resource-group <rg> 2>/dev/null
+# Or use the Foundry / AI portal quota blade:
+#   https://ai.azure.com  ->  Management center  ->  Quota
+# Request more:  Azure portal -> Quotas -> Cognitive Services / Azure OpenAI
+```
+
+If quota is short, lower `capacity` (e.g. to 10) or pick a region with headroom.
+
+### 4. Resource provider registrations
+
+Ensure these providers are **Registered** on the subscription (portal → Subscription
+→ Resource providers, or the commands below). `azd`/ARM auto-registers most, but
+first-time subscriptions frequently need these three explicitly:
+
+```bash
+az provider register --namespace Microsoft.CognitiveServices
+az provider register --namespace Microsoft.ApiManagement
+az provider register --namespace Microsoft.Search
+# Also used: Microsoft.Web, Microsoft.KeyVault, Microsoft.Storage,
+#            Microsoft.OperationalInsights, Microsoft.Insights,
+#            Microsoft.ManagedIdentity, Microsoft.Authorization
+```
+
+### 5. Region availability caveats
+
+Pick a region that supports **all** of:
+
+- **`gpt-4o` (GlobalStandard)** and **`text-embedding-3-large`** in Azure AI
+  Foundry — see [model region availability](https://learn.microsoft.com/azure/ai-services/openai/concepts/models).
+- **API Management Developer tier** — available in most regions but not every one;
+  see [products by region](https://azure.microsoft.com/global-infrastructure/services/).
+
+Well-tested choices: **East US 2**, **Sweden Central**. When in doubt, deploy AI
+Foundry and APIM in the same region to avoid cross-region latency.
+
+### 6. ServiceNow prerequisites
+
+- A **ServiceNow instance**. The assets target a Personal Developer Instance
+  (PDI): **`https://dev283128.service-now.com`** (see
+  [`assets/ServiceNow-instance-details.txt`](./assets/ServiceNow-instance-details.txt)).
+  Get your own free PDI at <https://developer.servicenow.com>.
+- A **ServiceNow user with the `itil` role** (or equivalent) — needs rights to
+  **read, create, and update `incident` records** via the Table API.
+- The **Table API OpenAPI spec is already provided** at
+  [`assets/ServiceNow-OpenAPI-spec.json`](./assets/ServiceNow-OpenAPI-spec.json)
+  and is imported into APIM automatically — you don't supply it.
+- `azd up` will **prompt for** the instance URL, username, and password. The
+  credentials are stored as **Key Vault secrets** and injected into APIM as
+  Basic auth named values — **they never appear in source, outputs, or app
+  settings in plaintext**.
+
+### 7. Cost note (not free)
+
+A hackathon-scale deployment is inexpensive but **not free**. Rough drivers:
+
+- **API Management — Developer tier:** ~**$0.07/hour (~$50/month)**. Billed while
+  provisioned; **also takes ~30–45 min to create** (see Troubleshooting).
+- **Azure AI Foundry model usage:** pay-per-token for `gpt-4o` + embeddings —
+  cents for a demo, scales with traffic.
+- **App Service B1**, **AI Search basic**, **Storage**, **Key Vault**,
+  **Log Analytics/App Insights:** a few dollars/day combined.
+
+**Estimate:** a day-long hackathon typically costs a **few US dollars to ~$10**,
+dominated by APIM's hourly charge. **Run `azd down` when done** (see Clean up).
+
+---
+
+## Deploy (the one-click path)
+
+```bash
+# 1. Clone
+git clone <this-repo-url>
+cd ITHelpdesk
+
+# 2. Sign in (both CLIs)
+azd auth login
+az login          # ensures az-based operations (bicep, quota) have context
+
+# 3. Deploy everything
+azd up
+```
+
+**Prompts you'll see during `azd up`:**
+
+1. **Environment name** — a short name; drives `rg-<name>` and the resource token.
+2. **Azure subscription** — pick the one where you have Owner / UAA.
+3. **Region** — pick one satisfying the model + APIM availability above.
+4. **ServiceNow instance URL** — press Enter to accept the default
+   `https://dev283128.service-now.com`, or enter your own.
+5. **ServiceNow username** — a user with the `itil` role.
+6. **ServiceNow password** — **entered securely (never echoed)**; stored in Key Vault.
+
+**What happens next (unattended):**
+
+- `azd provision` runs `infra/main.bicep` — creates the RG, all resources, model
+  deployments, APIM (with the ServiceNow OpenAPI import + MCP endpoint), and role
+  assignments.
+- `azd deploy` packages and deploys the **UI** to App Service.
+- The **`postprovision` hook** (`scripts/postprovision.*`) then:
+  1. **uploads the KB docs** (`assets/kb/*.md`) to the Storage `kb` container,
+  2. **builds the Azure AI Search index** (`it-helpdesk-kb`) over them, and
+  3. **creates/refreshes the 3 Foundry agents** (orchestrator, triage, incident)
+     and writes their IDs back to the azd environment. (Idempotent — safe to re-run.)
+
+**Open the UI** — when `azd up` finishes it prints the App Service URL. You can
+also fetch it any time:
+
+```bash
+azd env get-value SERVICE_UI_URI
+```
+
+Open that URL in a browser and start chatting.
+
+---
+
+## Validate your deployment
+
+Run each sample prompt in the UI and confirm the result:
+
+| Prompt | Correct result |
+|--------|----------------|
+| `How do I reset my forgotten password?` | KB resolution steps + a citation to **Password Reset and Login Assistance**. **No incident is created.** |
+| `Unable to log into Epic. Create a new incident.` | A **new incident number** (`INC…`), assigned to **Identity and Access Management** (pulled from `unable-to-login.md`). |
+| `lookup details for incident INC0000057` | Incident **INC0000057** details — state, urgency, assignment group. |
+| `update urgency for INC0010027 to low` | Confirmation that **INC0010027** urgency is now **Low** (ServiceNow code `3`). |
+
+> The lookup/update prompts reference example incident numbers (**INC0000057**,
+> **INC0010027**) present on the reference PDI. If you connected **your own**
+> ServiceNow instance, substitute incident numbers that exist there (the *create*
+> flow works against any instance and gives you fresh numbers to test with).
+
+---
+
+## Local / mock development (no Azure required)
+
+The whole chat flow runs offline with `HELPDESK_MOCK=1`: triage searches the local
+KB (`assets/kb/*.md`) and the incident agent uses an in-memory ServiceNow mock
+seeded with **INC0000057** and **INC0010027**.
+
+```bash
+# Create a venv and install runtime + dev + UI + servicenow extras
+python -m venv .venv
+.\.venv\Scripts\activate            # PowerShell:  .\.venv\Scripts\Activate.ps1
+# macOS/Linux:  source .venv/bin/activate
+pip install -e ".[dev,ui,servicenow]"
+
+# Run the full test suite (offline)
+$env:HELPDESK_MOCK = "1"            # bash/zsh:  export HELPDESK_MOCK=1
+pytest
+
+# Run the UI locally against the mock stack
+python -m uvicorn helpdesk.ui.app:app --host 0.0.0.0 --port 8000
+#   -> open http://localhost:8000
+```
+
+See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing guide.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `azd up` fails on a role assignment (`AuthorizationFailed`, `RoleAssignmentUpdateNotPermitted`) | Deploying user lacks role-assignment rights | Grant **Owner**, or **Contributor + User Access Administrator**, on the subscription (see Prerequisites §2). |
+| Model deployment fails with a quota / capacity error | No quota for `gpt-4o` or `text-embedding-3-large` in the region | Request quota, lower `capacity` in `main.bicep`, or choose another region (Prerequisites §3). |
+| `azd up` seems stuck for 30–45 min | **APIM Developer tier provisioning is slow (normal)** — a fresh APIM instance takes ~30–45 min to activate | Wait; it's not hung. Subsequent `azd up` runs are much faster. |
+| `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
+| Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
+| ServiceNow calls return **401/403** | Wrong username/password, or user lacks the `itil` role | Re-run and re-enter creds: `azd env set SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, ensure `itil` role, then `azd provision`. |
+| Lookup of `INC0000057` returns "not found" against your own instance | The example incidents only exist on the reference PDI | Use real incident numbers from your instance, or create one first via the create flow. |
+| UI loads but chat errors | postprovision didn't finish (no index / agents) | Re-run `azd provision` (re-triggers the idempotent postprovision hook), or run `python scripts/postprovision.py` with the azd env loaded. |
+
+---
+
+## Clean up
+
+Delete **all** provisioned resources (stops all charges, including APIM):
+
+```bash
+azd down --purge
+```
+
+`--purge` also purges soft-deleted Key Vault / Cognitive Services so the names can
+be reused immediately.
+
+---
+
+## Repository structure
+
+```
+azure.yaml              # azd manifest: UI service + preprovision/postprovision hooks
+ARCHITECTURE.md         # source of truth — components, data flows, contracts
+BUILD_PLAN.md           # ownership + build sequence
+pyproject.toml          # Python 3.11+ project + per-component extras
+README.md               # this guide
+
+infra/                  # Bicep IaC (subscription-scoped)
+  main.bicep            #   RG + module wiring + outputs contract
+  main.parameters.json  #   azd env -> Bicep param binding (incl. model defaults)
+  abbreviations.json    #   resource-name abbreviations
+  modules/              #   monitoring, identity, keyvault, storage, search,
+                        #   foundry (models), apim (ServiceNow + MCP), appservice
+
+src/
+  helpdesk/
+    orchestrator/       # Orchestrator router (Foundry hosted agent)
+    agents/             # Triage (KB) + Incident (ServiceNow) agents, KB parsing,
+                        #   search client, agent/index setup
+    ui/                 # FastAPI + Jinja2 chat app (App Service)
+    shared/             # config (azd outputs contract) + credential helpers
+  servicenow/           # ServiceNow / APIM MCP client + field/enum mapping [Switch]
+
+scripts/                # azd hooks: preprovision (ServiceNow inputs),
+                        #   postprovision (KB upload, index build, agent creation)
+tests/                  # pytest suites (mock + live) — see tests/README.md
+assets/                 # KB docs (kb/*.md), ServiceNow OpenAPI spec, sample prompts
+```
+
+| Folder | Purpose | Primary owner |
+|--------|---------|---------------|
+| `infra/` | All Azure resources (Bicep) | Tank |
+| `src/helpdesk/orchestrator`, `src/helpdesk/agents`, `src/helpdesk/ui` | Agents + orchestration + UI | Trinity |
+| `src/servicenow/` | ServiceNow / APIM MCP integration | Switch |
+| `scripts/` | azd lifecycle hooks | Tank + Trinity |
+| `tests/`, docs | Test coverage + this README | Dozer |
+| `ARCHITECTURE.md`, `azure.yaml` shape | Architecture & contracts | Morpheus |
+
+---
+
+## License
+
+MIT — see `pyproject.toml`.

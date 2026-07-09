@@ -2,6 +2,34 @@
 
 ## Active Decisions
 
+# Decision — Re-index Outlook KB assignment group ("M365 Support") to LIVE
+
+**Author:** Tank (Infra / Platform Engineer)
+**Date:** 2026-07-09
+**Env:** LIVE (`ithelpdesksc`, app `app-ztk6zx5aedqtc`, search index `it-helpdesk-kb`)
+**Status:** Shipped + proven live
+
+User edited `assets/kb/outlook-email-issues.md` — Recommended Assignment Group
+"Messaging and Collaboration" → **"M365 Support"** — and chose to keep + propagate it.
+
+Re-ran ONLY the KB data path from `scripts/postprovision.py` (no agent republish, no
+orchestrator rebuild, no full `azd up`):
+1. `upload_kb_docs()` — archival blob upload returned `AuthorizationFailure`
+   (non-critical, NOT the RAG path — expected under storage network policy).
+2. `build_search_index()` — updated AI Search `it-helpdesk-kb`: 34 chunks / 7 docs.
+
+Verification: outlook doc = 4 chunks, all `assignment_group = M365 Support`; stale
+"Messaging and Collaboration" content + filter matches = **0** (no stale-chunk cleanup
+needed). **Foundry IQ auto-picked-up the index update at retrieval time — no separate
+KB re-ingest/refresh required** (good to know for future KB edits). Live triage via
+`/api/chat/stream` on an Outlook-issue prompt returned `Recommended assignment group:
+M365 Support` with citation `assignmentGroup: M365 Support`, `sourceId:
+outlook-email-issues`. ruff clean, pytest 126 green. Commit `14f0199`.
+
+NOTE: the "Messaging and Collaboration" strings in `servicenow_client.py` /
+`test_servicenow_client.py` are UNRELATED mock seed data for existing ticket
+INC0010027 — intentionally left unchanged.
+
 # Decision — Pass triage Assignment Group to the Incident Agent on ticket create
 
 **Author:** Trinity (AI / Agent Engineer)

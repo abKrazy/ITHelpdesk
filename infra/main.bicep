@@ -62,6 +62,12 @@ param chatModelDeploymentName string = 'gpt-5.4'
 @description('Chat model name to deploy in Foundry.')
 param chatModelName string = 'gpt-5.4'
 
+@description('Triage chat model deployment name (separate lightweight mini model for the triage agent).')
+param triageChatModelDeploymentName string = 'gpt-5.4-mini'
+
+@description('Triage chat model name to deploy in Foundry (latest GPT mini).')
+param triageChatModelName string = 'gpt-5.4-mini'
+
 @description('Embedding model deployment name used to index KB docs.')
 param embeddingModelDeploymentName string = 'text-embedding-3-large'
 
@@ -187,6 +193,8 @@ module foundry './modules/foundry.bicep' = {
     aiProjectName: '${abbrs.aiFoundryProjects}${resourceToken}'
     chatModelDeploymentName: chatModelDeploymentName
     chatModelName: chatModelName
+    triageChatModelDeploymentName: triageChatModelDeploymentName
+    triageChatModelName: triageChatModelName
     embeddingModelDeploymentName: embeddingModelDeploymentName
     embeddingModelName: embeddingModelName
     // Native AI Search connection for the triage KB tool is created in the
@@ -340,6 +348,7 @@ output AZURE_AI_PROJECT_PRINCIPAL_ID string = foundry.outputs.projectPrincipalId
 output AZURE_AI_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
 output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
 output AZURE_OPENAI_CHAT_DEPLOYMENT string = chatModelDeploymentName
+output AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT string = triageChatModelDeploymentName
 output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = embeddingModelDeploymentName
 
 // -- Foundry project connections (native agent tools) --

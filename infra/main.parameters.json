@@ -26,6 +26,12 @@
     "chatModelName": {
       "value": "${AZURE_OPENAI_CHAT_MODEL=gpt-5.4}"
     },
+    "triageChatModelDeploymentName": {
+      "value": "${AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT=gpt-5.4-mini}"
+    },
+    "triageChatModelName": {
+      "value": "${AZURE_OPENAI_TRIAGE_CHAT_MODEL=gpt-5.4-mini}"
+    },
     "embeddingModelDeploymentName": {
       "value": "${AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large}"
     },

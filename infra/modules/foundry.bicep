@@ -27,6 +27,12 @@ param chatModelDeploymentName string
 @description('Chat model name to deploy.')
 param chatModelName string
 
+@description('Triage chat model deployment name (separate lightweight mini model).')
+param triageChatModelDeploymentName string
+
+@description('Triage chat model name to deploy (latest GPT mini).')
+param triageChatModelName string
+
 @description('Embedding model deployment name.')
 param embeddingModelDeploymentName string
 
@@ -142,6 +148,32 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   }
   dependsOn: [
     chatDeployment
+  ]
+}
+
+// Triage chat model deployment (separate lightweight mini model the triage agent
+// reasons with). Serialized after the chat + embedding deployments because a
+// Cognitive Services account rejects parallel deployment writes.
+resource triageChatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
+  parent: aiFoundry
+  name: triageChatModelDeploymentName
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 30
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: triageChatModelName
+      version: '2026-03-17'
+    }
+    // Pinning an explicit model version is incompatible with auto-upgrade.
+    versionUpgradeOption: 'NoAutoUpgrade'
+    raiPolicyName: 'Microsoft.DefaultV2'
+  }
+  dependsOn: [
+    chatDeployment
+    embeddingDeployment
   ]
 }
 

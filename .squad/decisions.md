@@ -2,6 +2,136 @@
 
 ## Active Decisions
 
+### 2026-07-09: gpt-5.5 model migration BLOCKED on zero subscription quota (swedencentral)
+
+**By:** Tank
+
+**What:** Halted the gpt-4o -> gpt-5.5 infra migration. Did NOT create the live
+`gpt-5.5` deployment, did NOT change `infra/main.bicep` / `infra/main.parameters.json` /
+`infra/modules/foundry.bicep` model defaults, and did NOT flip the azd env
+(`AZURE_OPENAI_CHAT_MODEL` / `AZURE_OPENAI_CHAT_DEPLOYMENT` remain `gpt-4o`). The
+existing live `gpt-4o` (GlobalStandard, cap 30, Succeeded) and `text-embedding-3-large`
+deployments are untouched, so currently-live agents keep working. Migration is parked
+until a quota increase is granted.
+
+**Why:** Quota check FIRST (per task guard rail) proved the subscription has ZERO
+TPM quota for gpt-5.5 in swedencentral:
+- `az cognitiveservices usage list -l swedencentral`:
+  `OpenAI.GlobalStandard.gpt-5.5` -> currentValue 0.00, **limit 0.00**;
+  `OpenAI.DataZoneStandard.gpt-5.5` -> **limit 0.00**. Every other gpt-5.x family
+  has a non-zero limit (1000-3000); gpt-5.5 specifically has none.
+- The model IS in the account catalog: `gpt-5.5` v`2026-04-24`, format OpenAI,
+  SKUs `GlobalStandard, DataZoneStandard, DataZoneProvisionedManaged,
+  GlobalProvisionedManaged` (confirms no plain `Standard` SKU for gpt-5.5).
+- Authoritative live probe (capacity 1) failed:
+  `(InsufficientQuota) This operation require 1 new capacity ... which is bigger
+  than the current available capacity 0 ... quota limit is 0 for
+  One Thousand Tokens Per Minute - gpt-5.5 - GlobalStandard.` The failed probe
+  created no resource.
+
+Because the largest capacity that fits is 0, nothing can be provisioned. Flipping
+the Bicep defaults + azd env to `gpt-5.5` with no deployment behind them would break
+Tank's `azd up` one-click contract (next `azd provision` fails InsufficientQuota) and
+would point Trinity's agents/UI at a non-existent deployment mid-migration. So the
+coupled changes are intentionally NOT applied.
+
+**Unblock (action required by abKrazy / subscription owner):** Request a quota
+increase for `OpenAI.GlobalStandard.gpt-5.5` in **swedencentral** on subscription
+`f7bd143a-73f9-4467-82d5-01ecc49d1610` (account `aif-ztk6zx5aedqtc`, RG
+`rg-ithelpdesksc`). Target >= 30 (30K TPM) to match the current gpt-4o capacity;
+smaller is acceptable if that is all that is granted. Do it via the Azure AI Foundry
+portal (Management center -> Quota) or an Azure support "Service and subscription
+limits (quotas)" request for Cognitive Services / OpenAI. Once granted, re-run this
+task and Tank will: pin `version: '2026-04-24'` with
+`versionUpgradeOption: 'NoAutoUpgrade'`, set capacity to the granted value, flip the
+Bicep + parameters + azd env defaults, create the live `gpt-5.5` deployment, then
+hand off to Trinity.
+
+**Handoff to Trinity:** DO NOT repoint agents/UI yet. There is no `gpt-5.5`
+deployment and it cannot be created until quota is granted. Agents remain on `gpt-4o`.
+
+### 2026-07-09: gpt-4o -> gpt-5.4 chat model migration (infra half) provisioned
+
+**By:** Tank
+
+**What:** Completed the infra half of the chat-model migration to `gpt-5.4`
+(the latest GPT-5 that HAS quota, chosen after the gpt-5.5 attempt was blocked on
+zero quota — see `tank-gpt55-model-deployment.md`). Concretely:
+- Created the live `gpt-5.4` deployment on account `aif-ztk6zx5aedqtc`
+  (RG `rg-ithelpdesksc`, swedencentral): model `gpt-5.4` v`2026-03-05`, format
+  OpenAI, SKU `GlobalStandard`, capacity **30**. `deployment show` =
+  provisioningState **Succeeded**.
+- `infra/main.bicep`: `chatModelDeploymentName` + `chatModelName` defaults ->
+  `'gpt-5.4'`.
+- `infra/main.parameters.json`: `AZURE_OPENAI_CHAT_DEPLOYMENT` and
+  `AZURE_OPENAI_CHAT_MODEL` defaults -> `gpt-5.4`.
+- `infra/modules/foundry.bicep` chatDeployment: kept `sku.name:'GlobalStandard'`,
+  capacity 30, PINNED `model.version:'2026-03-05'`, and set
+  `versionUpgradeOption:'NoAutoUpgrade'` (a pinned version is incompatible with
+  auto-upgrade). Embedding deployment (`text-embedding-3-large`) untouched.
+- azd env: `AZURE_OPENAI_CHAT_MODEL=gpt-5.4`, `AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4`.
+- Left the live `gpt-4o` (GlobalStandard, Succeeded) and `text-embedding-3-large`
+  deployments in place so currently-live agents keep working mid-migration.
+
+**Why:** Quota check FIRST (per guard rail) proved gpt-5.4 HAS quota in
+swedencentral: `OpenAI.GlobalStandard.gpt-5.4` -> currentValue 100, limit 3000
+(available ~2900 TPM). Chose capacity = min(30, available) = **30** to match the
+current gpt-4o capacity. `az bicep build --file infra/main.bicep` succeeds (only
+pre-existing lint warnings). Did NOT republish agents / rebuild the orchestrator /
+redeploy the UI — that is Trinity's half and required the deployment to exist first.
+
+**Handoff to Trinity:** The `gpt-5.4` deployment is live (Succeeded, GlobalStandard,
+cap 30) and the azd env now points chat model + deployment at `gpt-5.4`. Safe to
+repoint the agents/UI and rebuild/redeploy. gpt-4o remains live until you cut over.
+
+### 2026-07-09: Separate gpt-5.4-mini deployment for the triage agent
+
+**By:** Tank
+
+**What:** Provisioned a SEPARATE Foundry chat model deployment named `gpt-5.4-mini`
+(model `gpt-5.4-mini`, version `2026-03-17`, SKU `GlobalStandard`, capacity 30) on
+account `aif-ztk6zx5aedqtc` / RG `rg-ithelpdesksc` in swedencentral — live now,
+provisioningState Succeeded. Added Bicep plumbing so a fresh `azd up` reproduces it:
+new params `triageChatModelDeploymentName` / `triageChatModelName` in `infra/main.bicep`
+(threaded into the foundry module), a second chat deployment resource
+`triageChatDeployment` in `infra/modules/foundry.bicep` (pinned version `2026-03-17`,
+`NoAutoUpgrade`, `dependsOn: [chatDeployment, embeddingDeployment]` to serialize
+against parallel Cognitive Services deployment writes), corresponding
+`main.parameters.json` entries, and a new output
+`AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT`. azd env now carries
+`AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT=gpt-5.4-mini` and
+`AZURE_OPENAI_TRIAGE_CHAT_MODEL=gpt-5.4-mini`.
+
+**Why:** The user wants the triage agent to run on the latest GPT mini model,
+separate from the orchestrator/incident agents (which stay on gpt-5.4). Keeping it
+a distinct deployment lets Trinity wire the triage Prompt Agent to the mini model
+without touching the shared chat deployment. Quota was confirmed available
+(OpenAI.GlobalStandard.gpt-5.4-mini limit 1000, current 0 → capacity min(30,1000)=30).
+The gpt-5.4, gpt-4o, and text-embedding-3-large deployments were left untouched.
+
+### 2026-07-09: Cut all three agents + UI from gpt-4o to gpt-5.4 (reasoning model)
+**By:** Trinity
+**What:** Repointed the hardcoded `gpt-4o` runtime fallbacks to `gpt-5.4` in the
+orchestrator (`src/orchestrator/main.py`), the UI blocking + streaming paths
+(`src/helpdesk/ui/app.py`), plus README current-state docs and test fixtures.
+Republished the triage (v4) and incident (v5) Prompt Agents and registered a new
+hosted orchestrator version (v5) on image
+`acrztk6zx5aedqtc.azurecr.io/it-helpdesk-orchestrator:gpt54-20260709030100`. Set
+App Service app setting `AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4` and shipped the UI
+(`azd deploy ui`). Everything keys off the chat **deployment name** (`gpt-5.4`),
+which is the model handle — the agent builders already set `model=chat_deployment`.
+**Why:** The `gpt-5.4` deployment is now live on `aif-ztk6zx5aedqtc`; the old
+`gpt-4o` fallbacks risked silently pinning the old model. gpt-5.4 is a reasoning
+model: confirmed no `temperature`/`max_tokens`/`top_p` are passed anywhere in the
+call path (would be rejected), and the UI stream handler already filters to
+`response.output_text.delta` and ignores unknown events, so reasoning events don't
+break streaming. Live regression on gpt-5.4 passed all five cases (deflect-first
+KB, create-on-confirm INC0010049, status-only, cold sys_id-resolving urgency
+update to 1-High, streaming 182 token frames). App Insights spans on
+cloud_RoleName `it-helpdesk-orchestrator` show `gen_ai.request.model=gpt-5.4` /
+`gen_ai.response.model=gpt-5.4-2026-03-05`, proving the cutover took effect.
+
+
 ### 2026-07-08T16-19-30: Full architecture locked: azd one-click, APIM(Dev)+MCP, 3 Foundry agents, App Service UI, Python, single RG
 **By:** coordinator
 **What:** Full architecture locked: azd one-click, APIM(Dev)+MCP, 3 Foundry agents, App Service UI, Python, single RG

@@ -214,6 +214,7 @@ def create_foundry_agents(
     project_endpoint: str,
     chat_deployment: str,
     search_endpoint: str,
+    search_index_name: str,
     apim_mcp_url: str,
     mcp_connection_id: str,
 ) -> dict[str, str]:
@@ -241,7 +242,11 @@ def create_foundry_agents(
         INCIDENT_INSTRUCTIONS,
         build_incident_definition,
     )
-    from .definitions.triage_agent import build_triage_definition, ensure_search_connection
+    from .definitions.triage_agent import (
+        build_triage_definition,
+        ensure_kb_index,
+        ensure_search_connection,
+    )
 
     if not INCIDENT_INSTRUCTIONS:
         raise RuntimeError("Incident Prompt Agent instructions must not be empty.")
@@ -258,12 +263,20 @@ def create_foundry_agents(
         except Exception as exc:  # pragma: no cover - live-only
             _log(f"WARNING: could not list existing agents ({exc}); creating fresh.")
 
-        search_connection_id = ensure_search_connection(project, search_endpoint=search_endpoint)
+        search_connection_name = ensure_search_connection(project, search_endpoint=search_endpoint)
+        # Register the Search index as a Foundry Knowledge base (managed Index) so
+        # the triage agent grounds via a Knowledge base, not an inline search tool.
+        kb_index_asset_id = ensure_kb_index(
+            project,
+            connection_name=search_connection_name,
+            index_name=search_index_name,
+        )
+        _log(f"knowledge base index ready -> {kb_index_asset_id}")
 
         definitions = {
             "it-helpdesk-triage": build_triage_definition(
                 chat_deployment=chat_deployment,
-                search_connection_id=search_connection_id,
+                index_asset_id=kb_index_asset_id,
             ),
             "it-helpdesk-incident": build_incident_definition(
                 chat_deployment=chat_deployment,

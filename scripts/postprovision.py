@@ -116,6 +116,7 @@ def create_foundry_agents() -> None:
         project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         search_endpoint=env("AZURE_SEARCH_ENDPOINT"),
+        search_index_name=env("AZURE_SEARCH_INDEX_NAME"),
         apim_mcp_url=env("APIM_MCP_URL"),
         # Reference the MCP connection by NAME (not full ARM id) so the portal
         # links the tool to the connection and shows it in the Tools/Connections

@@ -101,13 +101,51 @@ def ensure_search_connection(project, *, search_endpoint: str) -> str:
     )
 
 
+KB_INDEX_NAME = "it-helpdesk-kb"
+KB_INDEX_VERSION = "1"
+
+
+def ensure_kb_index(
+    project,
+    *,
+    connection_name: str,
+    index_name: str,
+    kb_name: str = KB_INDEX_NAME,
+    version: str = KB_INDEX_VERSION,
+) -> str:
+    """Create/refresh the Foundry **Knowledge base** (managed Index) and return its asset id.
+
+    This registers the Azure AI Search index as a first-class Foundry *Index*
+    resource (``project.indexes``) backed by the project's Search connection, so
+    the triage agent references it as a **Knowledge base** (via ``index_asset_id``)
+    rather than as a raw inline Azure AI Search tool. ``create_or_update`` is
+    idempotent — re-running refreshes the same named/versioned knowledge base.
+
+    Returns the asset id in ``{name}/versions/{version}`` form, which is what the
+    agent's ``AISearchIndexResource.index_asset_id`` expects.
+    """
+
+    from azure.ai.projects.models import AzureAISearchIndex
+
+    project.indexes.create_or_update(
+        name=kb_name,
+        version=version,
+        index=AzureAISearchIndex(connection_name=connection_name, index_name=index_name),
+    )
+    return f"{kb_name}/versions/{version}"
+
+
 def build_triage_definition(
     *,
     chat_deployment: str,
-    search_connection_id: str,
-    index_name: str = "it-helpdesk-kb",
+    index_asset_id: str,
 ):
-    """Build the native-tool Prompt Agent definition for triage."""
+    """Build the native-tool Prompt Agent definition for triage.
+
+    Grounds on the Foundry Knowledge base (managed Index) identified by
+    ``index_asset_id`` — NOT a raw connection+index — so the portal shows the
+    agent using a Knowledge base rather than an inline Azure AI Search tool.
+    """
 
     from azure.ai.projects.models import (
         AISearchIndexResource,
@@ -121,8 +159,7 @@ def build_triage_definition(
         azure_ai_search=AzureAISearchToolResource(
             indexes=[
                 AISearchIndexResource(
-                    project_connection_id=search_connection_id,
-                    index_name=index_name,
+                    index_asset_id=index_asset_id,
                     query_type=AzureAISearchQueryType.VECTOR_SEMANTIC_HYBRID,
                     top_k=5,
                 )

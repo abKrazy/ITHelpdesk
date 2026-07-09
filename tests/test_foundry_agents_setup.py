@@ -32,6 +32,15 @@ class _FakeAgentsOps:
         return SimpleNamespace(id=f"{agent_name}:1", name=agent_name, version=1)
 
 
+class _FakeIndexesOps:
+    def __init__(self) -> None:
+        self.create_calls: list[dict] = []
+
+    def create_or_update(self, *, name, version, index):
+        self.create_calls.append({"name": name, "version": version, "index": index})
+        return SimpleNamespace(name=name, version=version)
+
+
 class _FakeProjectClient:
     instances: list["_FakeProjectClient"] = []
 
@@ -39,6 +48,7 @@ class _FakeProjectClient:
         self.endpoint = endpoint
         self.credential = credential
         self.agents = _FakeAgentsOps(existing=["it-helpdesk-triage"])
+        self.indexes = _FakeIndexesOps()
         self.connections = SimpleNamespace(
             list=lambda: [
                 SimpleNamespace(
@@ -90,6 +100,10 @@ def _install_fake_projects_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     class AzureAISearchQueryType:
         VECTOR_SEMANTIC_HYBRID = "vector_semantic_hybrid"
 
+    class AzureAISearchIndex:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
     class ConnectionType:
         AZURE_AI_SEARCH = "AzureAISearch"
 
@@ -98,6 +112,7 @@ def _install_fake_projects_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     models.AzureAISearchToolResource = AzureAISearchToolResource
     models.AzureAISearchTool = AzureAISearchTool
     models.AzureAISearchQueryType = AzureAISearchQueryType
+    models.AzureAISearchIndex = AzureAISearchIndex
     models.ConnectionType = ConnectionType
 
 
@@ -131,6 +146,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
         project_endpoint="https://x.services.ai.azure.com/api/projects/p",
         chat_deployment="gpt-4o",
         search_endpoint="https://search.example.net",
+        search_index_name="it-helpdesk-kb",
         apim_mcp_url="https://apim.example.net/mcp",
         mcp_connection_id="servicenow-apim-mcp",
     )
@@ -144,17 +160,23 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     client = _FakeProjectClient.instances[-1]
     assert client.closed  # context manager closed the client
 
+    # A Foundry Knowledge base (managed Index) is registered from the Search
+    # connection before the triage agent is created.
+    assert len(client.indexes.create_calls) == 1
+    kb = client.indexes.create_calls[0]
+    assert kb["name"] == "it-helpdesk-kb"
+    assert kb["version"] == "1"
+    assert kb["index"].connection_name == "search-connection"
+    assert kb["index"].index_name == "it-helpdesk-kb"
+
     # create_version called once per spec with the right model + instructions.
     created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
     assert set(created) == set(setup._AGENT_NAMES)
     assert created["it-helpdesk-triage"].model == "gpt-4o"
-    assert created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0].index_name == (
-        "it-helpdesk-kb"
-    )
-    assert (
-        created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0].project_connection_id
-        == "search-connection"
-    )
+    # Triage grounds on the Knowledge base via index_asset_id, NOT a raw connection.
+    triage_index = created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0]
+    assert triage_index.index_asset_id == "it-helpdesk-kb/versions/1"
+    assert getattr(triage_index, "project_connection_id", None) is None
     assert created["it-helpdesk-incident"].model == "gpt-4o"
     assert created["it-helpdesk-incident"].instructions == "incident instructions"
     assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == "servicenow-apim-mcp"
@@ -180,14 +202,13 @@ def test_triage_definition_imports_and_builds_with_native_search_tool(
 
     definition = build_triage_definition(
         chat_deployment="gpt-4o",
-        search_connection_id="/connections/search",
-        index_name="it-helpdesk-kb",
+        index_asset_id="it-helpdesk-kb/versions/1",
     )
 
     index = definition.tools[0].azure_ai_search.indexes[0]
     assert definition.model == "gpt-4o"
-    assert index.project_connection_id == "/connections/search"
-    assert index.index_name == "it-helpdesk-kb"
+    assert index.index_asset_id == "it-helpdesk-kb/versions/1"
+    assert getattr(index, "project_connection_id", None) is None
     assert index.query_type == "vector_semantic_hybrid"
     assert index.top_k == 5
 

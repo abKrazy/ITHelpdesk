@@ -2,6 +2,63 @@
 
 ## Active Decisions
 
+# Decision — UI citation rendering for orchestrator v11
+
+**Author:** Switch (Backend / Integration Engineer)
+**Date:** 2026-07-09
+**Status:** Shipped + live-verified
+
+Renders KB citations in the UI. Orchestrator v11 emits a terminal `citations`
+function_call side-channel (real doc titles resolved from `mcp_call` output,
+deduped + numbered). UI now:
+- `src/helpdesk/ui/app.py` — live `/api/chat/stream` parses
+  `response.function_call_arguments.done` where `name == "citations"` and emits
+  a new additive SSE frame `{"type":"citations","citations":[...]}`. `citations`
+  stays out of `_TOOL_STATUS_LABELS` so it makes no handoff chip.
+- `src/helpdesk/ui/templates/index.html` — accumulates raw token text; when the
+  `citations` frame arrives, builds a marker→index map, replaces full-width
+  markers `/【(\d+):(\d+)†[^】]*】/g` with `[n]`, drops unmatched markers,
+  collapses adjacent duplicates, appends a non-clickable `Sources:` list
+  (`[1] Laptop Running Slow — laptop-performance.md`).
+- Tests 121→123 (`tests/test_ui_app.py`, citations present + absent). ruff +
+  pytest green. Deployed via `azd deploy ui`.
+- Live-verified: KB deflect turn renders `[1]` + Sources (no raw `【…】`);
+  incident/status turn has no citations frame, no Sources, no stray `[n]`.
+- Commit `79357b0`.
+
+# Decision — KB citations side-channel: surface real source metadata to the UI
+
+**Author:** Trinity (AI / Agent Engineer)
+**Date:** 2026-07-09
+**Env:** ithelpdesksc (swedencentral) · App Insights `appi-ztk6zx5aedqtc`
+**Status:** Shipped + proven live (orchestrator **v11**)
+
+After the relay pass was killed (v10) the triage KB answer streams through with
+its RAW inline markers `【m:s†source】` visible. Foundry provides citation data in
+three places on the inner Responses stream: (1) inline markers whose `†source`
+segment is the generic literal "source" (no title); (2) the `knowledge_base_retrieve`
+`mcp_call` output — the ONLY place real metadata lives (`title`, `source`,
+`doc_id`, `assignment_group`), with the same `【m:s†source】` header so
+marker→doc is deterministic; (3) annotation events giving chunk-id-only urls
+`mcp://searchindex/{chunkId}` (no friendly title, not browsable).
+
+Mechanism (orchestrator v11, `src/orchestrator/main.py`): proxy still forwards
+ONLY `output_text.delta` as byte-equivalent user text (markers preserved), but
+now ALSO parses the `mcp_call` output server-side, resolves each marker to its
+document, and after the text emits ONE terminal `citations` function_call whose
+`arguments` = `{"citations":[{index, sourceId, sourceTitle, sourceName,
+assignmentGroup, markers[], chunkIds[], url}]}` — deduped by document, numbered
+by first appearance. Rides the existing contract; UI ignores unknown tool
+(non-breaking); no extra model pass → latency unchanged from v10. Only emitted on
+KB turns that cited sources (incident/status turns emit none).
+
+Limitation flagged to abKrazy: real TITLES available (clean Sources list), but
+each KB article is chunked under one `doc_id`, so a single-topic answer yields
+one `[1]`; distinct docs yield `[1] [2]…`. No public per-source URL — Sources
+list is title+filename, not clickable. Orchestrator v10→**v11** (image tag
+`citations-20260709134145-3477011`). ruff clean, pytest 121 green (+6 citation
+tests). Commit `7c19722`.
+
 # Decision — Kill the orchestrator relay pass (stream sub-agent through)
 
 **Author:** Trinity (AI / Agent Engineer)

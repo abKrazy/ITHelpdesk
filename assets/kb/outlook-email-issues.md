@@ -16,4 +16,4 @@ Assists users experiencing Outlook email issues.
 - Permission issues persist
 
 ## Recommended Assignment Group
-Messaging and Collaboration
+M365 Support

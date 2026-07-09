@@ -217,6 +217,7 @@ def create_foundry_agents(
     search_index_name: str,
     apim_mcp_url: str,
     mcp_connection_id: str,
+    kb_connection_id: str,
 ) -> dict[str, str]:
     """Create/refresh the triage + incident Prompt Agents and persist IDs.
 
@@ -232,6 +233,12 @@ def create_foundry_agents(
     references. ``create_version`` is idempotent-friendly: re-running publishes a
     new version of the same named agent rather than duplicating it.
 
+    Triage grounds on the **Foundry IQ knowledge base** (an Azure AI Search
+    agentic-retrieval knowledge base built here from the KB index) via an MCP
+    RemoteTool connection referenced by name (``kb_connection_id``) — the same
+    pattern the incident agent uses for the ServiceNow APIM MCP server, NOT an
+    inline Azure AI Search tool or a managed project Index.
+
     The custom Orchestrator is intentionally not created here in Phase 1; Phase 2
     will publish it as a Microsoft Agent Framework Hosted Agent.
     """
@@ -244,12 +251,22 @@ def create_foundry_agents(
     )
     from .definitions.triage_agent import (
         build_triage_definition,
-        ensure_kb_index,
-        ensure_search_connection,
+        ensure_kb_knowledge_base,
+        kb_mcp_url,
     )
 
     if not INCIDENT_INSTRUCTIONS:
         raise RuntimeError("Incident Prompt Agent instructions must not be empty.")
+
+    # Data-plane: ensure the Foundry IQ knowledge base (Azure AI Search
+    # agentic-retrieval knowledge source + knowledge base) exists over the KB
+    # index. Returns the knowledge base name the MCP endpoint is addressed by.
+    kb_name = ensure_kb_knowledge_base(
+        search_endpoint=search_endpoint,
+        index_name=search_index_name,
+    )
+    triage_kb_mcp_url = kb_mcp_url(search_endpoint, knowledge_base_name=kb_name)
+    _log(f"Foundry IQ knowledge base ready -> {kb_name} ({triage_kb_mcp_url})")
 
     ids: dict[str, str] = {}
     with AIProjectClient(endpoint=project_endpoint, credential=get_credential()) as project:
@@ -263,20 +280,11 @@ def create_foundry_agents(
         except Exception as exc:  # pragma: no cover - live-only
             _log(f"WARNING: could not list existing agents ({exc}); creating fresh.")
 
-        search_connection_name = ensure_search_connection(project, search_endpoint=search_endpoint)
-        # Register the Search index as a Foundry Knowledge base (managed Index) so
-        # the triage agent grounds via a Knowledge base, not an inline search tool.
-        kb_index_asset_id = ensure_kb_index(
-            project,
-            connection_name=search_connection_name,
-            index_name=search_index_name,
-        )
-        _log(f"knowledge base index ready -> {kb_index_asset_id}")
-
         definitions = {
             "it-helpdesk-triage": build_triage_definition(
                 chat_deployment=chat_deployment,
-                index_asset_id=kb_index_asset_id,
+                kb_mcp_url=triage_kb_mcp_url,
+                kb_connection_name=kb_connection_id,
             ),
             "it-helpdesk-incident": build_incident_definition(
                 chat_deployment=chat_deployment,

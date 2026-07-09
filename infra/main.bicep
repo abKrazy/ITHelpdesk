@@ -287,6 +287,24 @@ module mcpConnection './modules/mcp-connection.bicep' = {
   }
 }
 
+// 12) Foundry RemoteTool connection: the Foundry IQ knowledge base (Azure AI
+//     Search agentic-retrieval) MCP endpoint, so the Triage Prompt Agent grounds
+//     on it by connection NAME via an MCP tool (no inline key) — mirroring the
+//     incident agent's MCP pattern. Authenticates as the project's system-assigned
+//     managed identity (granted Search Index Data Reader by search-rbac.bicep).
+//     Runs after search (needs the endpoint) and foundry (needs the project MI).
+module kbConnection './modules/kb-connection.bicep' = {
+  name: 'kb-connection'
+  scope: rg
+  params: {
+    aiFoundryName: foundry.outputs.aiFoundryName
+    aiProjectName: foundry.outputs.projectName
+    connectionName: 'it-helpdesk-kb-mcp'
+    searchEndpoint: search.outputs.endpoint
+    knowledgeBaseName: searchIndexName
+  }
+}
+
 // -----------------------------------------------------------------------------
 // OUTPUTS CONTRACT — consumed by azd env, the UI app settings, and the
 // postprovision hook (KB upload + agent creation). Do NOT remove or rename
@@ -326,6 +344,14 @@ output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = embeddingModelDeploymentName
 output AZURE_AI_SEARCH_CONNECTION_NAME string = foundry.outputs.searchConnectionName
 output AZURE_AI_MCP_CONNECTION_ID string = mcpConnection.outputs.connectionId
 output AZURE_AI_MCP_CONNECTION_NAME string = mcpConnection.outputs.connectionName
+
+// The Foundry IQ knowledge base (Azure AI Search agentic-retrieval) RemoteTool
+// connection the Triage agent grounds through by name (ProjectManagedIdentity
+// auth). The knowledgeSource/knowledgeBase are created data-plane in postprovision.
+output AZURE_AI_KB_CONNECTION_ID string = kbConnection.outputs.connectionId
+output AZURE_AI_KB_CONNECTION_NAME string = kbConnection.outputs.connectionName
+output AZURE_AI_KB_MCP_URL string = kbConnection.outputs.kbMcpEndpointUrl
+output AZURE_AI_KB_NAME string = kbConnection.outputs.knowledgeBaseName
 
 // -- Storage (KB source docs) --
 output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.name

@@ -4,6 +4,11 @@ The new experience creates versioned *Prompt Agents* through
 ``AIProjectClient.agents.create_version`` (data-plane v1), NOT the legacy
 ``azure.ai.agents.AgentsClient`` assistants API (``asst_`` IDs). These tests fake
 the ``azure.ai.projects`` SDK so they run offline, and assert the new call shape.
+
+Triage grounds on the Foundry IQ knowledge base (Azure AI Search agentic
+retrieval) via an MCP tool — the same RemoteTool project-connection pattern the
+incident agent uses — NOT an inline Azure AI Search tool or a managed Index. The
+data-plane knowledge source + knowledge base are ensured before agent creation.
 """
 
 from __future__ import annotations
@@ -32,15 +37,6 @@ class _FakeAgentsOps:
         return SimpleNamespace(id=f"{agent_name}:1", name=agent_name, version=1)
 
 
-class _FakeIndexesOps:
-    def __init__(self) -> None:
-        self.create_calls: list[dict] = []
-
-    def create_or_update(self, *, name, version, index):
-        self.create_calls.append({"name": name, "version": version, "index": index})
-        return SimpleNamespace(name=name, version=version)
-
-
 class _FakeProjectClient:
     instances: list["_FakeProjectClient"] = []
 
@@ -48,16 +44,6 @@ class _FakeProjectClient:
         self.endpoint = endpoint
         self.credential = credential
         self.agents = _FakeAgentsOps(existing=["it-helpdesk-triage"])
-        self.indexes = _FakeIndexesOps()
-        self.connections = SimpleNamespace(
-            list=lambda: [
-                SimpleNamespace(
-                    name="search-connection",
-                    type="AzureAISearch",
-                    target="https://search.example.net",
-                )
-            ]
-        )
         self.closed = False
         _FakeProjectClient.instances.append(self)
 
@@ -85,35 +71,71 @@ def _install_fake_projects_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             self.tools = tools or []
             self.kind = "prompt"
 
-    class AISearchIndexResource:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    class AzureAISearchToolResource:
-        def __init__(self, *, indexes):
-            self.indexes = indexes
-
-    class AzureAISearchTool:
-        def __init__(self, *, azure_ai_search):
-            self.azure_ai_search = azure_ai_search
-
-    class AzureAISearchQueryType:
-        VECTOR_SEMANTIC_HYBRID = "vector_semantic_hybrid"
-
-    class AzureAISearchIndex:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    class ConnectionType:
-        AZURE_AI_SEARCH = "AzureAISearch"
+    class MCPTool:
+        def __init__(
+            self,
+            *,
+            server_label,
+            server_url,
+            require_approval,
+            allowed_tools=None,
+            project_connection_id,
+        ):
+            self.server_label = server_label
+            self.server_url = server_url
+            self.require_approval = require_approval
+            self.allowed_tools = allowed_tools
+            self.project_connection_id = project_connection_id
 
     models.PromptAgentDefinition = PromptAgentDefinition
-    models.AISearchIndexResource = AISearchIndexResource
-    models.AzureAISearchToolResource = AzureAISearchToolResource
-    models.AzureAISearchTool = AzureAISearchTool
-    models.AzureAISearchQueryType = AzureAISearchQueryType
-    models.AzureAISearchIndex = AzureAISearchIndex
-    models.ConnectionType = ConnectionType
+    models.MCPTool = MCPTool
+
+
+def _install_fake_triage_definition(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Fake definitions.triage_agent so setup runs without azure-search-documents."""
+    module = types.ModuleType("helpdesk.agents.definitions.triage_agent")
+    calls: dict = {"ensure": [], "kb_mcp_url": []}
+
+    def ensure_kb_knowledge_base(*, search_endpoint, index_name):
+        calls["ensure"].append({"search_endpoint": search_endpoint, "index_name": index_name})
+        return "it-helpdesk-kb"
+
+    def kb_mcp_url(
+        search_endpoint,
+        *,
+        knowledge_base_name="it-helpdesk-kb",
+        api_version="2026-05-01-preview",
+    ):
+        calls["kb_mcp_url"].append(
+            {"search_endpoint": search_endpoint, "knowledge_base_name": knowledge_base_name}
+        )
+        return (
+            f"{search_endpoint}/knowledgebases/{knowledge_base_name}/mcp"
+            f"?api-version={api_version}"
+        )
+
+    def build_triage_definition(*, chat_deployment, kb_mcp_url, kb_connection_name):
+        from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+
+        return PromptAgentDefinition(
+            model=chat_deployment,
+            instructions="triage instructions",
+            tools=[
+                MCPTool(
+                    server_label="knowledge-base",
+                    server_url=kb_mcp_url,
+                    require_approval="never",
+                    allowed_tools=["knowledge_base_retrieve"],
+                    project_connection_id=kb_connection_name,
+                )
+            ],
+        )
+
+    module.ensure_kb_knowledge_base = ensure_kb_knowledge_base
+    module.kb_mcp_url = kb_mcp_url
+    module.build_triage_definition = build_triage_definition
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return calls
 
 
 def _install_fake_incident_definition(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,6 +158,7 @@ def _install_fake_incident_definition(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeProjectClient.instances.clear()
     _install_fake_projects_sdk(monkeypatch)
+    kb_calls = _install_fake_triage_definition(monkeypatch)
     _install_fake_incident_definition(monkeypatch)
     monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
 
@@ -149,6 +172,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
         search_index_name="it-helpdesk-kb",
         apim_mcp_url="https://apim.example.net/mcp",
         mcp_connection_id="servicenow-apim-mcp",
+        kb_connection_id="it-helpdesk-kb-mcp",
     )
 
     # One native-tool Prompt Agent per Phase 1 spec; no orchestrator Prompt Agent.
@@ -160,23 +184,28 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     client = _FakeProjectClient.instances[-1]
     assert client.closed  # context manager closed the client
 
-    # A Foundry Knowledge base (managed Index) is registered from the Search
-    # connection before the triage agent is created.
-    assert len(client.indexes.create_calls) == 1
-    kb = client.indexes.create_calls[0]
-    assert kb["name"] == "it-helpdesk-kb"
-    assert kb["version"] == "1"
-    assert kb["index"].connection_name == "search-connection"
-    assert kb["index"].index_name == "it-helpdesk-kb"
+    # The Foundry IQ knowledge base (Search agentic-retrieval KS + KB) is ensured
+    # data-plane over the KB index before the triage agent is created.
+    assert kb_calls["ensure"] == [
+        {"search_endpoint": "https://search.example.net", "index_name": "it-helpdesk-kb"}
+    ]
 
     # create_version called once per spec with the right model + instructions.
     created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
     assert set(created) == set(setup._AGENT_NAMES)
     assert created["it-helpdesk-triage"].model == "gpt-4o"
-    # Triage grounds on the Knowledge base via index_asset_id, NOT a raw connection.
-    triage_index = created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0]
-    assert triage_index.index_asset_id == "it-helpdesk-kb/versions/1"
-    assert getattr(triage_index, "project_connection_id", None) is None
+
+    # Triage grounds via an MCP tool on the KB connection (by NAME), NOT an inline
+    # Azure AI Search tool or managed Index.
+    triage_tool = created["it-helpdesk-triage"].tools[0]
+    assert triage_tool.server_label == "knowledge-base"
+    assert triage_tool.allowed_tools == ["knowledge_base_retrieve"]
+    assert triage_tool.project_connection_id == "it-helpdesk-kb-mcp"
+    assert triage_tool.server_url.endswith(
+        "/knowledgebases/it-helpdesk-kb/mcp?api-version=2026-05-01-preview"
+    )
+    assert not hasattr(triage_tool, "azure_ai_search")
+
     assert created["it-helpdesk-incident"].model == "gpt-4o"
     assert created["it-helpdesk-incident"].instructions == "incident instructions"
     assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == "servicenow-apim-mcp"
@@ -184,51 +213,3 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     # IDs persisted via azd env under the expected variable names.
     assert persisted[setup._AGENT_ID_ENV["it-helpdesk-triage"]] == "it-helpdesk-triage"
     assert set(persisted) == set(setup._AGENT_ID_ENV.values())
-
-
-def test_triage_definition_imports_and_builds_with_native_search_tool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_fake_projects_sdk(monkeypatch)
-
-    from helpdesk.agents.definitions.triage_agent import (
-        TRIAGE_INSTRUCTIONS,
-        build_triage_definition,
-        ensure_search_connection,
-    )
-
-    assert "Deflect-first" in TRIAGE_INSTRUCTIONS
-    assert "no ticket is being created yet" in TRIAGE_INSTRUCTIONS
-
-    definition = build_triage_definition(
-        chat_deployment="gpt-4o",
-        index_asset_id="it-helpdesk-kb/versions/1",
-    )
-
-    index = definition.tools[0].azure_ai_search.indexes[0]
-    assert definition.model == "gpt-4o"
-    assert index.index_asset_id == "it-helpdesk-kb/versions/1"
-    assert getattr(index, "project_connection_id", None) is None
-    assert index.query_type == "vector_semantic_hybrid"
-    assert index.top_k == 5
-
-    project = SimpleNamespace(
-        connections=SimpleNamespace(
-            list=lambda: [
-                SimpleNamespace(
-                    name="other-search",
-                    type="CognitiveSearch",
-                    target="https://other.example.net",
-                ),
-                SimpleNamespace(
-                    name="search-connection",
-                    type="AzureAISearch",
-                    target="https://search.example.net/",
-                ),
-            ]
-        )
-    )
-    assert (
-        ensure_search_connection(project, search_endpoint="https://search.example.net")
-        == "search-connection"
-    )

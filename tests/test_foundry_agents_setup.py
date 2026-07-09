@@ -213,3 +213,59 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     # IDs persisted via azd env under the expected variable names.
     assert persisted[setup._AGENT_ID_ENV["it-helpdesk-triage"]] == "it-helpdesk-triage"
     assert set(persisted) == set(setup._AGENT_ID_ENV.values())
+
+
+def test_triage_uses_its_own_deployment_incident_stays_on_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """triage_chat_deployment routes ONLY the triage agent to a different model;
+    the incident agent keeps the main chat_deployment (matching the orchestrator)."""
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    _install_fake_triage_definition(monkeypatch)
+    _install_fake_incident_definition(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+
+    setup.create_foundry_agents(
+        project_endpoint="https://x.services.ai.azure.com/api/projects/p",
+        chat_deployment="gpt-5.4",
+        triage_chat_deployment="gpt-5.4-mini",
+        search_endpoint="https://search.example.net",
+        search_index_name="it-helpdesk-kb",
+        apim_mcp_url="https://apim.example.net/mcp",
+        mcp_connection_id="servicenow-apim-mcp",
+        kb_connection_id="it-helpdesk-kb-mcp",
+    )
+
+    client = _FakeProjectClient.instances[-1]
+    created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
+    assert created["it-helpdesk-triage"].model == "gpt-5.4-mini"
+    assert created["it-helpdesk-incident"].model == "gpt-5.4"
+
+
+def test_triage_deployment_falls_back_to_main_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no triage_chat_deployment, triage stays on the main chat_deployment."""
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    _install_fake_triage_definition(monkeypatch)
+    _install_fake_incident_definition(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+
+    setup.create_foundry_agents(
+        project_endpoint="https://x.services.ai.azure.com/api/projects/p",
+        chat_deployment="gpt-5.4",
+        search_endpoint="https://search.example.net",
+        search_index_name="it-helpdesk-kb",
+        apim_mcp_url="https://apim.example.net/mcp",
+        mcp_connection_id="servicenow-apim-mcp",
+        kb_connection_id="it-helpdesk-kb-mcp",
+    )
+
+    client = _FakeProjectClient.instances[-1]
+    created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
+    assert created["it-helpdesk-triage"].model == "gpt-5.4"
+    assert created["it-helpdesk-incident"].model == "gpt-5.4"

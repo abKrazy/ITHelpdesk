@@ -51,6 +51,13 @@ class Settings:
         # --- Models ----------------------------------------------------------
         self.openai_endpoint = env.get("AZURE_OPENAI_ENDPOINT", "")
         self.chat_deployment = env.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "")
+        # Triage runs on its own (typically smaller/cheaper) chat deployment; the
+        # orchestrator + incident agents stay on the main chat_deployment. Falls
+        # back to chat_deployment when the triage-specific var is unset so nothing
+        # breaks in environments that only provision the main deployment.
+        self.triage_chat_deployment = (
+            env.get("AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", "") or self.chat_deployment
+        )
         self.embedding_deployment = env.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "")
 
         # --- Storage (KB source for indexing) --------------------------------

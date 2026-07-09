@@ -218,6 +218,7 @@ def create_foundry_agents(
     apim_mcp_url: str,
     mcp_connection_id: str,
     kb_connection_id: str,
+    triage_chat_deployment: str | None = None,
 ) -> dict[str, str]:
     """Create/refresh the triage + incident Prompt Agents and persist IDs.
 
@@ -227,6 +228,11 @@ def create_foundry_agents(
     that surfaces the agents in the new Foundry portal, unlike the legacy
     ``azure.ai.agents.AgentsClient`` assistants API (``asst_``-prefixed IDs) it
     replaces.
+
+    The triage agent runs on ``triage_chat_deployment`` when supplied (a
+    typically smaller/cheaper model, e.g. ``gpt-5.4-mini``), falling back to the
+    main ``chat_deployment`` when unset. The incident agent always stays on the
+    main ``chat_deployment`` (matching the hosted orchestrator container).
 
     The canonical identifier of a new-experience agent is its **name** (equal to
     ``AgentDetails.id``); that stable name is what we persist and what the runtime
@@ -258,6 +264,9 @@ def create_foundry_agents(
     if not INCIDENT_INSTRUCTIONS:
         raise RuntimeError("Incident Prompt Agent instructions must not be empty.")
 
+    # Triage gets its own deployment when provided; otherwise the main one.
+    triage_deployment = triage_chat_deployment or chat_deployment
+
     # Data-plane: ensure the Foundry IQ knowledge base (Azure AI Search
     # agentic-retrieval knowledge source + knowledge base) exists over the KB
     # index. Returns the knowledge base name the MCP endpoint is addressed by.
@@ -282,7 +291,7 @@ def create_foundry_agents(
 
         definitions = {
             "it-helpdesk-triage": build_triage_definition(
-                chat_deployment=chat_deployment,
+                chat_deployment=triage_deployment,
                 kb_mcp_url=triage_kb_mcp_url,
                 kb_connection_name=kb_connection_id,
             ),
@@ -292,6 +301,9 @@ def create_foundry_agents(
                 mcp_connection_id=mcp_connection_id,
             ),
         }
+        _log(
+            f"triage model={triage_deployment} | incident model={chat_deployment}"
+        )
 
         for name in _AGENT_NAMES:
             version = project.agents.create_version(

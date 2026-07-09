@@ -115,6 +115,12 @@ def create_foundry_agents() -> None:
     _create(
         project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
+        # Triage runs on its own (smaller/cheaper) deployment when provisioned;
+        # falls back to the main chat deployment inside setup when unset.
+        triage_chat_deployment=env(
+            "AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", required=False, default=None
+        )
+        or None,
         search_endpoint=env("AZURE_SEARCH_ENDPOINT"),
         search_index_name=env("AZURE_SEARCH_INDEX_NAME"),
         apim_mcp_url=env("APIM_MCP_URL"),

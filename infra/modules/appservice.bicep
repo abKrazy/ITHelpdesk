@@ -60,11 +60,12 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   location: location
   tags: tags
   kind: 'linux'
-  // Basic (B1) is the minimum tier that supports Always On (warm-keep). Do not
-  // downgrade to Free/Shared (F1/D1) — those cannot hold the gunicorn worker warm,
-  // reintroducing a first-request cold start on the UI after idle.
+  // Basic B2 gives the UI more CPU/RAM headroom while keeping Always On (warm-keep).
+  // Basic (B1+) is the minimum tier that supports Always On. Do not downgrade to
+  // Free/Shared (F1/D1) — those cannot hold the gunicorn worker warm, reintroducing
+  // a first-request cold start on the UI after idle.
   sku: {
-    name: 'B1'
+    name: 'B2'
     tier: 'Basic'
   }
   properties: {

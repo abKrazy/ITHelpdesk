@@ -103,6 +103,40 @@
       }
     }
 
+    function renderCitedText(rawText, citations) {
+      const entries = Array.isArray(citations) ? citations.slice() : [];
+      const markerToIndex = new Map();
+      for (const entry of entries) {
+        const idx = Number(entry && entry.index);
+        if (!Number.isFinite(idx)) continue;
+        for (const marker of (entry.markers || [])) {
+          markerToIndex.set(marker, idx);
+        }
+      }
+
+      const markerPattern = /\u3010(\d+):(\d+)\u2020[^\u3011]*\u3011/g;
+      let rendered = rawText.replace(markerPattern, (marker) => {
+        const idx = markerToIndex.get(marker);
+        return idx ? `[${idx}]` : '';
+      });
+      rendered = rendered.replace(/(\[\d+\])(?:\s*\1)+/g, '$1');
+
+      if (!entries.length) return rendered;
+
+      const lines = entries
+        .sort((a, b) => Number(a.index || 0) - Number(b.index || 0))
+        .map((entry) => {
+          const idx = Number(entry.index);
+          const title = entry.sourceTitle || entry.sourceName || entry.sourceId
+            || (entry.markers && entry.markers[0]) || 'Source';
+          const suffix = entry.sourceName && entry.sourceName !== title
+            ? ` \u2014 ${entry.sourceName}`
+            : '';
+          return `[${idx}] ${title}${suffix}`;
+        });
+      return `${rendered.trimEnd()}\n\nSources:\n${lines.join('\n')}`;
+    }
+
     // Fallback: the original blocking POST /api/chat call.
     async function fallbackChat(message, history, bubble) {
       const res = await fetch('/api/chat', {
@@ -134,6 +168,8 @@
       const decoder = new TextDecoder();
       let buffer = '';
       let text = '';
+      let renderedText = '';
+      let citations = [];
       let started = false;
       let route = [];
       let sawTerminal = false;
@@ -166,8 +202,16 @@
             bubble.textContent = '';
           }
           text += payload.text;
-          bubble.textContent = text;
+          renderedText = renderCitedText(text, citations);
+          bubble.textContent = renderedText;
           chat.scrollTop = chat.scrollHeight;
+        } else if (payload.type === 'citations') {
+          citations = payload.citations || [];
+          renderedText = renderCitedText(text, citations);
+          if (started) {
+            bubble.textContent = renderedText;
+            chat.scrollTop = chat.scrollHeight;
+          }
         } else if (payload.type === 'done') {
           sawTerminal = true;
           clearHandoff();
@@ -177,7 +221,8 @@
           clearHandoff();
           bubble.classList.remove('thinking');
           text = payload.text || 'The agent reported an error.';
-          bubble.textContent = text;
+          renderedText = text;
+          bubble.textContent = renderedText;
         }
       };
 
@@ -208,7 +253,7 @@
         throw new Error('stream closed before any content');
       }
       renderRoute(route);
-      turns.push({ role: 'assistant', content: text || '(no response)' });
+      turns.push({ role: 'assistant', content: renderedText || text || '(no response)' });
     }
 
     form.addEventListener('submit', async (e) => {

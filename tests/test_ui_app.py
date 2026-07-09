@@ -11,11 +11,14 @@ depend on.
 from __future__ import annotations
 
 import json
+import importlib
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from helpdesk.ui.app import app
+ui_app_module = importlib.import_module("helpdesk.ui.app")
+app = ui_app_module.app
 
 
 @pytest.fixture(scope="module")
@@ -224,6 +227,95 @@ def _collect_stream(client: TestClient, payload: dict) -> list[dict]:
         assert resp.status_code == 200
         body = "".join(resp.iter_text())
     return _parse_sse(body)
+
+
+class _FakeResponsesClient:
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        self._events = events
+
+    @property
+    def responses(self):
+        return self
+
+    def create(self, **_kwargs):
+        return iter(self._events)
+
+
+def _live_stream_events(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, events: list[SimpleNamespace]
+) -> list[dict]:
+    previous = app.state.openai_client
+    app.state.openai_client = _FakeResponsesClient(events)
+    monkeypatch.setattr(
+        ui_app_module,
+        "get_settings",
+        lambda: SimpleNamespace(mock_mode=False, chat_deployment="test-model"),
+    )
+    try:
+        return _collect_stream(client, {"message": "my laptop is running slow"})
+    finally:
+        app.state.openai_client = previous
+
+
+def test_live_chat_stream_emits_citations_frame(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal citations function_call is surfaced as its own SSE frame."""
+    payload = {
+        "citations": [
+            {
+                "index": 1,
+                "sourceId": "laptop-performance",
+                "sourceTitle": "Laptop Running Slow",
+                "sourceName": "laptop-performance.md",
+                "markers": [
+                    "\u30105:0\u2020source\u3011",
+                    "\u30105:1\u2020source\u3011",
+                ],
+            }
+        ]
+    }
+    events = _live_stream_events(
+        client,
+        monkeypatch,
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="Try a reboot "),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                name="citations",
+                arguments=json.dumps(payload),
+                item_id="citations-call",
+            ),
+            SimpleNamespace(type="response.completed"),
+        ],
+    )
+
+    citation_frames = [e for e in events if e["type"] == "citations"]
+    assert citation_frames == [{"type": "citations", "citations": payload["citations"]}]
+    assert not any(
+        e.get("label") == "Calling citations Agent"
+        for e in events
+        if e["type"] == "status"
+    )
+
+
+def test_live_chat_stream_omits_citations_when_absent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Incident/direct turns without the terminal function_call stay unchanged."""
+    events = _live_stream_events(
+        client,
+        monkeypatch,
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="INC0010045 is open."),
+            SimpleNamespace(type="response.completed"),
+        ],
+    )
+
+    assert [e["type"] for e in events] == ["status", "token", "done"]
+    assert not [e for e in events if e["type"] == "citations"]
 
 
 def test_chat_stream_emits_handoff_status_frames(client: TestClient) -> None:

@@ -207,7 +207,9 @@ def create_app() -> FastAPI:
         Handoff status frames ``{"type":"status","label":...,"tool":...}`` ride the
         same stream: ``response.created`` -> "Calling Orchestrator", and each
         ``response.output_item.added`` function_call maps its ``item.name`` to a
-        sub-agent label. Unknown event types are skipped defensively.
+        sub-agent label. KB citation metadata rides a terminal ``citations``
+        function_call as ``{"type":"citations","citations":[...]}``. Unknown event
+        types are skipped defensively.
         """
         settings = get_settings()
         conversation = [
@@ -240,10 +242,22 @@ def create_app() -> FastAPI:
                             seen_calls.add(call_id)
                         yield _status_frame(name, label)
             elif etype == "response.function_call_arguments.done":
+                name = getattr(event, "name", None)
+                if name == "citations":
+                    try:
+                        payload = json.loads(getattr(event, "arguments", "") or "{}")
+                    except json.JSONDecodeError:
+                        _LOGGER.warning("Ignoring malformed citations payload")
+                    else:
+                        yield {
+                            "type": "citations",
+                            "citations": payload.get("citations") or [],
+                        }
+                    continue
+
                 # Fallback only when the name was absent on the ``added`` event.
                 call_id = getattr(event, "item_id", None)
                 if call_id not in seen_calls:
-                    name = getattr(event, "name", None)
                     label = _TOOL_STATUS_LABELS.get(name) if name else None
                     if label:
                         if call_id:

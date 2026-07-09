@@ -18,6 +18,19 @@
     button { padding: 12px 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; }
     button:disabled { opacity: .6; cursor: default; }
     .thinking { color: #6b7280; font-style: italic; }
+    .handoff {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe;
+      border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600;
+      margin: 4px 0 8px 0; margin-right: 20%;
+    }
+    .handoff::before {
+      content: ''; width: 8px; height: 8px; border-radius: 50%;
+      background: #6366f1; animation: handoff-pulse 1s ease-in-out infinite;
+    }
+    @keyframes handoff-pulse {
+      0%, 100% { opacity: .35; } 50% { opacity: 1; }
+    }
     .thinking::after {
       content: '…';
       display: inline-block;
@@ -125,10 +138,30 @@
       let route = [];
       let sawTerminal = false;
 
+      // Live handoff indicator: a small chip showing which agent the
+      // orchestrator is calling. Inserted just before the reply bubble.
+      let chip = null;
+      const showHandoff = (label) => {
+        if (!label) return;
+        if (!chip) {
+          chip = document.createElement('div');
+          chip.className = 'handoff';
+          chat.insertBefore(chip, bubble);
+        }
+        chip.textContent = label;
+        chat.scrollTop = chat.scrollHeight;
+      };
+      const clearHandoff = () => {
+        if (chip) { chip.remove(); chip = null; }
+      };
+
       const handleEvent = (payload) => {
-        if (payload.type === 'token') {
+        if (payload.type === 'status') {
+          showHandoff(payload.label);
+        } else if (payload.type === 'token') {
           if (!started) {
             started = true;
+            clearHandoff();
             bubble.classList.remove('thinking');
             bubble.textContent = '';
           }
@@ -137,9 +170,11 @@
           chat.scrollTop = chat.scrollHeight;
         } else if (payload.type === 'done') {
           sawTerminal = true;
+          clearHandoff();
           route = payload.route || [];
         } else if (payload.type === 'error') {
           sawTerminal = true;
+          clearHandoff();
           bubble.classList.remove('thinking');
           text = payload.text || 'The agent reported an error.';
           bubble.textContent = text;
@@ -169,6 +204,7 @@
       if (buffer) flushLine(buffer);
 
       if (!started && !sawTerminal) {
+        clearHandoff();
         throw new Error('stream closed before any content');
       }
       renderRoute(route);

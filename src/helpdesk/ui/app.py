@@ -49,6 +49,30 @@ _CHAT_ERROR_REPLY = (
 
 ORCHESTRATOR_AGENT_NAME = "it-helpdesk-orchestrator"
 
+# Handoff status labels shown in the UI as the orchestrator hands off. The
+# orchestrator's internal tool calls surface in the outer Responses stream as
+# ``response.output_item.added`` events whose ``item.name`` is the tool name
+# (see .squad/decisions/inbox/trinity-handoff-events-contract.md).
+_STATUS_ORCHESTRATOR = "Calling Orchestrator"
+_TOOL_STATUS_LABELS = {
+    "troubleshoot_from_knowledge_base": "Calling Triage Agent",
+    "manage_servicenow_incident": "Calling Incident Agent",
+}
+# Map the mock orchestrator's route names to the sub-agent tool names so the
+# mock stream can synthesise the same status frames as the live path.
+_ROUTE_TO_TOOL = {
+    "triage": "troubleshoot_from_knowledge_base",
+    "incident": "manage_servicenow_incident",
+}
+
+
+def _status_frame(tool: str | None, label: str) -> dict:
+    """Build an out-of-band ``status`` SSE frame for a handoff indicator."""
+    frame = {"type": "status", "label": label}
+    if tool is not None:
+        frame["tool"] = tool
+    return frame
+
 
 class ChatTurn(BaseModel):
     role: Literal["user", "assistant"]
@@ -180,7 +204,10 @@ def create_app() -> FastAPI:
 
         Emits ``{"type":"token","text":...}`` for each ``response.output_text.delta``
         and a terminal ``{"type":"done","route":[...]}`` on ``response.completed``.
-        Unknown event types are skipped defensively.
+        Handoff status frames ``{"type":"status","label":...,"tool":...}`` ride the
+        same stream: ``response.created`` -> "Calling Orchestrator", and each
+        ``response.output_item.added`` function_call maps its ``item.name`` to a
+        sub-agent label. Unknown event types are skipped defensively.
         """
         settings = get_settings()
         conversation = [
@@ -197,16 +224,39 @@ def create_app() -> FastAPI:
             )
 
         got_text = False
+        seen_calls: set[str] = set()
         async for event in _iter_in_thread(make_stream):
             etype = getattr(event, "type", None)
-            if etype == "response.output_text.delta":
+            if etype == "response.created":
+                yield _status_frame(None, _STATUS_ORCHESTRATOR)
+            elif etype == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if getattr(item, "type", None) == "function_call":
+                    name = getattr(item, "name", None)
+                    call_id = getattr(item, "id", None)
+                    label = _TOOL_STATUS_LABELS.get(name) if name else None
+                    if label:
+                        if call_id:
+                            seen_calls.add(call_id)
+                        yield _status_frame(name, label)
+            elif etype == "response.function_call_arguments.done":
+                # Fallback only when the name was absent on the ``added`` event.
+                call_id = getattr(event, "item_id", None)
+                if call_id not in seen_calls:
+                    name = getattr(event, "name", None)
+                    label = _TOOL_STATUS_LABELS.get(name) if name else None
+                    if label:
+                        if call_id:
+                            seen_calls.add(call_id)
+                        yield _status_frame(name, label)
+            elif etype == "response.output_text.delta":
                 delta = getattr(event, "delta", "") or ""
                 if delta:
                     got_text = True
                     yield {"type": "token", "text": delta}
             elif etype == "response.completed":
                 break
-            # Skip other event types (created, in_progress, item.*, etc.).
+            # Skip other event types (in_progress, args.delta, etc.).
         if not got_text:
             yield {"type": "token", "text": "(the orchestrator returned no content)"}
         yield {"type": "done", "route": ["orchestrator"]}
@@ -217,10 +267,20 @@ def create_app() -> FastAPI:
         """Simulate streaming for the in-process mock orchestrator.
 
         The mock returns the full reply as one string; we chunk it by word so the
-        UI and tests still exercise the incremental token-rendering code path.
+        UI and tests still exercise the incremental token-rendering code path. We
+        also synthesise the handoff ``status`` frames the live stream produces:
+        "Calling Orchestrator" first, then a mapped sub-agent label per route hop.
         """
         result = _mock_orchestrator().run(message, history=history)
         reply = result.reply or "(no response)"
+
+        yield _status_frame(None, _STATUS_ORCHESTRATOR)
+        for hop in result.route:
+            tool = _ROUTE_TO_TOOL.get(hop)
+            label = _TOOL_STATUS_LABELS.get(tool) if tool else None
+            if label:
+                yield _status_frame(tool, label)
+
         for token in re.findall(r"\S+\s*", reply):
             yield {"type": "token", "text": token}
             await asyncio.sleep(0.005)

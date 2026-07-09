@@ -217,3 +217,63 @@ def test_chat_stream_failure_yields_error_frame(client: TestClient) -> None:
     error = next(e for e in events if e["type"] == "error")
     assert error["error"] == "MCP endpoint unreachable"
     assert "couldn't reach the ServiceNow backend" in error["text"]
+
+
+def _collect_stream(client: TestClient, payload: dict) -> list[dict]:
+    with client.stream("POST", "/api/chat/stream", json=payload) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+    return _parse_sse(body)
+
+
+def test_chat_stream_emits_handoff_status_frames(client: TestClient) -> None:
+    """The mock stream synthesises the live handoff status frames.
+
+    Mirrors the live Responses stream contract
+    (.squad/decisions/inbox/trinity-handoff-events-contract.md): a
+    "Calling Orchestrator" status frame first, then a mapped sub-agent label.
+    A KB-answerable 'create' prompt routes via triage.
+    """
+    events = _collect_stream(
+        client,
+        {"message": "Unable to log into Epic. Create a new incident."},
+    )
+    statuses = [e for e in events if e["type"] == "status"]
+
+    # First status frame is always "Calling Orchestrator".
+    assert statuses, "expected at least one status frame"
+    assert statuses[0] == {"type": "status", "label": "Calling Orchestrator"}
+
+    labels = [s["label"] for s in statuses]
+    assert "Calling Triage Agent" in labels
+    triage = next(s for s in statuses if s["label"] == "Calling Triage Agent")
+    assert triage["tool"] == "troubleshoot_from_knowledge_base"
+
+    # Status frames precede the first token frame (chip clears when text arrives).
+    first_status_idx = next(i for i, e in enumerate(events) if e["type"] == "status")
+    first_token_idx = next(i for i, e in enumerate(events) if e["type"] == "token")
+    assert first_status_idx < first_token_idx
+
+
+def test_chat_stream_emits_incident_handoff_status(client: TestClient) -> None:
+    """A confirm-ticket turn surfaces the 'Calling Incident Agent' status frame."""
+    original = "my laptop is running slow. please file a ticket."
+    offer = client.post("/api/chat", json={"message": original}).json()["reply"]
+
+    events = _collect_stream(
+        client,
+        {
+            "message": "go ahead",
+            "history": [
+                {"role": "user", "content": original},
+                {"role": "assistant", "content": offer},
+            ],
+        },
+    )
+    statuses = [e for e in events if e["type"] == "status"]
+    labels = [s["label"] for s in statuses]
+
+    assert statuses[0]["label"] == "Calling Orchestrator"
+    assert "Calling Incident Agent" in labels
+    incident = next(s for s in statuses if s["label"] == "Calling Incident Agent")
+    assert incident["tool"] == "manage_servicenow_incident"

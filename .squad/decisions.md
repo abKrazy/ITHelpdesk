@@ -807,3 +807,36 @@ Analytics workspace `log-ztk6zx5aedqtc`): `invoke_agent it-helpdesk-orchestrator
 `cloud_RoleName == "it-helpdesk-orchestrator"`. Telemetry is additive only — the
 verbatim-relay instructions, deflect-first flow, and tool wiring are unchanged.
 
+
+---
+
+### 2026-07-09: Chat UI streams tokens over SSE with a "Thinking…" indicator
+
+**By:** Switch
+
+**What:** Added `POST /api/chat/stream` to the App Service UI (`src/helpdesk/ui/app.py`)
+— a `text/event-stream` (SSE) `StreamingResponse` that emits one frame per line
+`data: {json}\n\n`. Frame protocol: `{"type":"token","text":...}` per delta,
+a terminal `{"type":"done","route":[...]}`, and on failure a structured
+`{"type":"error","text":...,"error":...}` frame (never a bare HTTP 500). The
+live path calls `client.responses.create(..., stream=True)` and forwards
+`response.output_text.delta` deltas, ending on `response.completed`; unknown
+event types are skipped defensively. The blocking sync stream is driven on a
+worker thread via an `asyncio.Queue` so the event loop can flush each frame.
+The mock path chunks the in-process orchestrator's full reply by word so tests
+and offline runs exercise the same incremental path. `index.html` shows an
+animated "Thinking…" bubble on submit, clears it on the first token, appends
+tokens incrementally (`white-space: pre-wrap`, auto-scroll), renders the route
+on `done`, and falls back to `POST /api/chat` if the stream fails to start.
+The original `/api/chat` endpoint is unchanged (fallback + existing tests).
+
+**Why:** The blocking `POST /api/chat` left users staring at nothing until the
+whole answer landed. Streaming + a Thinking indicator gives immediate feedback
+and progressive rendering. SSE-over-fetch (POST + `ReadableStream` reader) was
+chosen over `EventSource` because we send a JSON body. The structured terminal
+`error` frame preserves the "client can always parse a response" contract.
+Verified live against the hosted `it-helpdesk-orchestrator` (gpt-4o): 148
+incremental token frames for "my laptop is running slow", and confirmed the
+deployed App Service (`app-ztk6zx5aedqtc.azurewebsites.net`) streams end-to-end.
+UI-only change; no orchestrator/triage/incident agent or infra changes.
+

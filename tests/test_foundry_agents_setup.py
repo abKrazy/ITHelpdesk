@@ -38,7 +38,16 @@ class _FakeProjectClient:
     def __init__(self, *, endpoint, credential):
         self.endpoint = endpoint
         self.credential = credential
-        self.agents = _FakeAgentsOps(existing=["it-helpdesk-orchestrator"])
+        self.agents = _FakeAgentsOps(existing=["it-helpdesk-triage"])
+        self.connections = SimpleNamespace(
+            list=lambda: [
+                SimpleNamespace(
+                    name="search-connection",
+                    type="AzureAISearch",
+                    target="https://search.example.net",
+                )
+            ]
+        )
         self.closed = False
         _FakeProjectClient.instances.append(self)
 
@@ -60,17 +69,59 @@ def _install_fake_projects_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     models = sys.modules["azure.ai.projects.models"]
 
     class PromptAgentDefinition:
-        def __init__(self, *, model, instructions):
+        def __init__(self, *, model, instructions, tools=None):
             self.model = model
             self.instructions = instructions
+            self.tools = tools or []
             self.kind = "prompt"
 
+    class AISearchIndexResource:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class AzureAISearchToolResource:
+        def __init__(self, *, indexes):
+            self.indexes = indexes
+
+    class AzureAISearchTool:
+        def __init__(self, *, azure_ai_search):
+            self.azure_ai_search = azure_ai_search
+
+    class AzureAISearchQueryType:
+        VECTOR_SEMANTIC_HYBRID = "vector_semantic_hybrid"
+
+    class ConnectionType:
+        AZURE_AI_SEARCH = "AzureAISearch"
+
     models.PromptAgentDefinition = PromptAgentDefinition
+    models.AISearchIndexResource = AISearchIndexResource
+    models.AzureAISearchToolResource = AzureAISearchToolResource
+    models.AzureAISearchTool = AzureAISearchTool
+    models.AzureAISearchQueryType = AzureAISearchQueryType
+    models.ConnectionType = ConnectionType
+
+
+def _install_fake_incident_definition(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = types.ModuleType("helpdesk.agents.definitions.incident_agent")
+    module.INCIDENT_INSTRUCTIONS = "incident instructions"
+
+    def build_incident_definition(*, chat_deployment, apim_mcp_url, apim_key):  # noqa: ARG001
+        from azure.ai.projects.models import PromptAgentDefinition
+
+        return PromptAgentDefinition(
+            model=chat_deployment,
+            instructions=module.INCIDENT_INSTRUCTIONS,
+            tools=[SimpleNamespace(apim_mcp_url=apim_mcp_url, apim_key=apim_key)],
+        )
+
+    module.build_incident_definition = build_incident_definition
+    monkeypatch.setitem(sys.modules, module.__name__, module)
 
 
 def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeProjectClient.instances.clear()
     _install_fake_projects_sdk(monkeypatch)
+    _install_fake_incident_definition(monkeypatch)
     monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
 
     persisted: dict[str, str] = {}
@@ -79,11 +130,15 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     ids = setup.create_foundry_agents(
         project_endpoint="https://x.services.ai.azure.com/api/projects/p",
         chat_deployment="gpt-4o",
+        search_endpoint="https://search.example.net",
+        apim_mcp_url="https://apim.example.net/mcp",
+        apim_key="fake-key",
     )
 
-    # One agent per spec, keyed by name; IDs are the stable agent names (no asst_).
-    assert set(ids) == {name for name, _ in setup._AGENT_SPECS}
+    # One native-tool Prompt Agent per Phase 1 spec; no orchestrator Prompt Agent.
+    assert set(ids) == set(setup._AGENT_NAMES)
     assert ids["it-helpdesk-triage"] == "it-helpdesk-triage"
+    assert "it-helpdesk-orchestrator" not in ids
     assert all(not v.startswith("asst_") for v in ids.values())
 
     client = _FakeProjectClient.instances[-1]
@@ -91,11 +146,68 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
 
     # create_version called once per spec with the right model + instructions.
     created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
-    assert set(created) == {name for name, _ in setup._AGENT_SPECS}
-    for name, instructions in setup._AGENT_SPECS:
-        assert created[name].model == "gpt-4o"
-        assert created[name].instructions == instructions
+    assert set(created) == set(setup._AGENT_NAMES)
+    assert created["it-helpdesk-triage"].model == "gpt-4o"
+    assert created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0].index_name == (
+        "it-helpdesk-kb"
+    )
+    assert (
+        created["it-helpdesk-triage"].tools[0].azure_ai_search.indexes[0].project_connection_id
+        == "search-connection"
+    )
+    assert created["it-helpdesk-incident"].model == "gpt-4o"
+    assert created["it-helpdesk-incident"].instructions == "incident instructions"
+    assert created["it-helpdesk-incident"].tools[0].apim_key == "fake-key"
 
     # IDs persisted via azd env under the expected variable names.
     assert persisted[setup._AGENT_ID_ENV["it-helpdesk-triage"]] == "it-helpdesk-triage"
     assert set(persisted) == set(setup._AGENT_ID_ENV.values())
+
+
+def test_triage_definition_imports_and_builds_with_native_search_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_projects_sdk(monkeypatch)
+
+    from helpdesk.agents.definitions.triage_agent import (
+        TRIAGE_INSTRUCTIONS,
+        build_triage_definition,
+        ensure_search_connection,
+    )
+
+    assert "Deflect-first" in TRIAGE_INSTRUCTIONS
+    assert "no ticket is being created yet" in TRIAGE_INSTRUCTIONS
+
+    definition = build_triage_definition(
+        chat_deployment="gpt-4o",
+        search_connection_id="/connections/search",
+        index_name="it-helpdesk-kb",
+    )
+
+    index = definition.tools[0].azure_ai_search.indexes[0]
+    assert definition.model == "gpt-4o"
+    assert index.project_connection_id == "/connections/search"
+    assert index.index_name == "it-helpdesk-kb"
+    assert index.query_type == "vector_semantic_hybrid"
+    assert index.top_k == 5
+
+    project = SimpleNamespace(
+        connections=SimpleNamespace(
+            list=lambda: [
+                SimpleNamespace(
+                    name="other-search",
+                    type="CognitiveSearch",
+                    target="https://other.example.net",
+                ),
+                SimpleNamespace(
+                    name="search-connection",
+                    type="AzureAISearch",
+                    target="https://search.example.net/",
+                ),
+            ]
+        )
+    )
+    assert (
+        ensure_search_connection(project, search_endpoint="https://search.example.net")
+        == "search-connection"
+    )

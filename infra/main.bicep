@@ -91,7 +91,7 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 // -----------------------------------------------------------------------------
 // MODULE WIRING (all deploy INTO the single RG)
 // Sequencing (implicit via dependency refs):
-//   monitoring -> identity -> keyvault -> storage -> search -> foundry -> apim -> appservice
+//   monitoring -> identity -> keyvault -> storage/search -> foundry -> search-rbac/acr/apim -> appservice
 // -----------------------------------------------------------------------------
 
 // 1) Monitoring: Log Analytics + Application Insights ------------- Owner: Tank
@@ -178,18 +178,38 @@ module foundry './modules/foundry.bicep' = {
     chatModelName: chatModelName
     embeddingModelDeploymentName: embeddingModelDeploymentName
     embeddingModelName: embeddingModelName
-    // Foundry connects to Search + Storage for grounding.
-    searchServiceResourceId: search.outputs.resourceId
-    storageAccountResourceId: storage.outputs.resourceId
-    kbContainerName: kbContainerName
-    applicationInsightsResourceId: monitoring.outputs.applicationInsightsResourceId
+    // Native tool connections are created data-plane by postprovision.
     managedIdentityResourceId: identity.outputs.resourceId
     managedIdentityPrincipalId: identity.outputs.principalId
     principalId: principalId
+    searchServicePrincipalId: search.outputs.principalId
   }
 }
 
-// 7) APIM: Developer tier, imports the ServiceNow OpenAPI spec and
+// 7) Cross-service Search RBAC: Foundry identities can manage/read Search.
+module searchRbac './modules/search-rbac.bicep' = {
+  name: 'search-rbac'
+  scope: rg
+  params: {
+    searchServiceName: search.outputs.name
+    foundryProjectPrincipalId: foundry.outputs.projectPrincipalId
+    foundryAccountPrincipalId: foundry.outputs.aiFoundryPrincipalId
+  }
+}
+
+// 8) ACR: stores the Phase-2 Foundry Hosted Agent container image -- Owner: Tank
+module acr './modules/acr.bicep' = {
+  name: 'acr'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    acrName: '${abbrs.containerRegistryRegistries}${resourceToken}'
+    foundryProjectPrincipalId: foundry.outputs.projectPrincipalId
+  }
+}
+
+// 9) APIM: Developer tier, imports the ServiceNow OpenAPI spec and
 //    exposes it as an MCP server endpoint. --------------------- Owner: Switch (config) / Tank (resource)
 module apim './modules/apim.bicep' = {
   name: 'apim'
@@ -212,7 +232,7 @@ module apim './modules/apim.bicep' = {
   }
 }
 
-// 8) App Service: the customer-facing UI ------------------------- Owner: Tank
+// 10) App Service: the customer-facing UI ------------------------ Owner: Tank
 module appservice './modules/appservice.bicep' = {
   name: 'appservice'
   scope: rg
@@ -262,6 +282,7 @@ output SERVICENOW_PASSWORD_SECRET_NAME string = keyvault.outputs.serviceNowPassw
 // -- Foundry (Trinity's agents target these) --
 output AZURE_AI_FOUNDRY_NAME string = foundry.outputs.aiFoundryName
 output AZURE_AI_PROJECT_NAME string = foundry.outputs.projectName
+output AZURE_AI_PROJECT_PRINCIPAL_ID string = foundry.outputs.projectPrincipalId
 output AZURE_AI_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
 output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
 output AZURE_OPENAI_CHAT_DEPLOYMENT string = chatModelDeploymentName
@@ -277,10 +298,21 @@ output AZURE_SEARCH_SERVICE_NAME string = search.outputs.name
 output AZURE_SEARCH_ENDPOINT string = search.outputs.endpoint
 output AZURE_SEARCH_INDEX_NAME string = searchIndexName
 
+// -- Container Registry (Foundry Hosted Agent images) --
+output AZURE_CONTAINER_REGISTRY_NAME string = acr.outputs.name
+output ACR_LOGIN_SERVER string = acr.outputs.loginServer
+output ACR_RESOURCE_ID string = acr.outputs.resourceId
+
 // -- APIM MCP endpoint (Switch's incident agent calls this) --
 output AZURE_APIM_NAME string = apim.outputs.name
 output AZURE_APIM_GATEWAY_URL string = apim.outputs.gatewayUrl
+output APIM_GATEWAY_URL string = apim.outputs.gatewayUrl
+output APIM_MCP_URL string = apim.outputs.mcpEndpointUrl
 output SERVICENOW_MCP_ENDPOINT string = apim.outputs.mcpEndpointUrl
+@secure()
+output APIM_SUBSCRIPTION_KEY string = apim.outputs.mcpSubscriptionKey
+@secure()
+output SERVICENOW_MCP_SUBSCRIPTION_KEY string = apim.outputs.mcpSubscriptionKey
 output SERVICENOW_INSTANCE_URL string = serviceNowInstanceUrl
 
 // -- App Service (the UI) --

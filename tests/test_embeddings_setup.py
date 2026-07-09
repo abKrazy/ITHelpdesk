@@ -90,6 +90,8 @@ def _install_fake_search_index_models(monkeypatch: pytest.MonkeyPatch) -> None:
 
     models.SearchFieldDataType = SearchFieldDataType
     for class_name in [
+        "AzureOpenAIVectorizer",
+        "AzureOpenAIVectorizerParameters",
         "HnswAlgorithmConfiguration",
         "SearchableField",
         "SearchField",

@@ -3,8 +3,8 @@
 // Azure AI Search service that stores the vector/semantic KB index used by the
 // triage agent for grounding. The postprovision hook builds the index
 // (AZURE_SEARCH_INDEX_NAME) from the KB docs in Storage.
-// Managed identity granted "Search Index Data Contributor" + "Search Service
-// Contributor"; Foundry connects to this service for grounding.
+// Managed identity granted Search data/service roles; Foundry connects to this
+// service for grounding.
 // Signature LOCKED by main.bicep.
 // Prefer AVM: br/public:avm/res/search/search-service
 // =============================================================================
@@ -26,6 +26,7 @@ param principalId string = ''
 
 // Role definition IDs (built-in).
 var searchIndexDataContributorRoleId = '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
+var searchIndexDataReaderRoleId = '1407120a-92aa-4202-b7e9-c0e197c71c8f'
 var searchServiceContributorRoleId = '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
 
 resource searchService 'Microsoft.Search/searchServices@2024-06-01-preview' = {
@@ -66,6 +67,16 @@ resource miServiceContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
   scope: searchService
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchServiceContributorRoleId)
+    principalId: managedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource miIndexDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(searchService.id, managedIdentityPrincipalId, searchIndexDataReaderRoleId)
+  scope: searchService
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchIndexDataReaderRoleId)
     principalId: managedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }

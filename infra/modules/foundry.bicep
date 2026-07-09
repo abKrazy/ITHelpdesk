@@ -2,8 +2,8 @@
 // modules/foundry.bicep — STUB (Owner: Tank)
 // Azure AI Foundry account (hub) + project + model deployments. This is where
 // Trinity's 3 agents (orchestrator hosted agent, triage, incident) live. The
-// project connects to AI Search (grounding) and Storage, and emits telemetry
-// to Application Insights.
+// project emits endpoints for postprovision to create native data-plane
+// connections (AI Search, MCP, telemetry) after ARM provisioning.
 // Signature LOCKED by main.bicep.
 // Prefer AVM: br/public:avm/res/cognitive-services/account (kind=AIServices)
 //             + project + deployments, or the Foundry AVM pattern module.
@@ -33,18 +33,6 @@ param embeddingModelDeploymentName string
 @description('Embedding model name to deploy.')
 param embeddingModelName string
 
-@description('Resource ID of the AI Search service to connect for grounding.')
-param searchServiceResourceId string
-
-@description('Resource ID of the Storage account to connect.')
-param storageAccountResourceId string
-
-@description('KB blob container name for the project storage connection.')
-param kbContainerName string
-
-@description('Resource ID of Application Insights for tracing.')
-param applicationInsightsResourceId string
-
 @description('Resource ID of the runtime managed identity.')
 param managedIdentityResourceId string
 
@@ -54,10 +42,14 @@ param managedIdentityPrincipalId string
 @description('Object ID of the deploying user (optional local-dev access).')
 param principalId string = ''
 
+@description('Principal ID of the Azure AI Search service system-assigned managed identity.')
+param searchServicePrincipalId string
+
 // Role definition IDs (built-in).
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 var azureAIDeveloperRoleId = '64702f94-c441-49e6-a78b-ef80e0188fee'
+var foundryProjectManagerRoleId = 'eadc314b-1a2d-4efa-be10-5d325db5065e'
 
 // Azure AI Foundry account (Cognitive Services / AIServices kind) with project
 // management enabled so the child project + hosted agents can be created.
@@ -138,65 +130,10 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   ]
 }
 
-// --- Project connections (grounding + telemetry) -----------------------------
-// Derive resource names/endpoints from the passed-in resource IDs.
-var searchServiceNameFromId = last(split(searchServiceResourceId, '/'))
-var storageAccountNameFromId = last(split(storageAccountResourceId, '/'))
-
-// Connect the project to Azure AI Search for grounded retrieval (AAD auth).
-resource searchConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = {
-  parent: aiProject
-  name: 'search-connection'
-  properties: {
-    category: 'CognitiveSearch'
-    target: 'https://${searchServiceNameFromId}.search.windows.net'
-    authType: 'AAD'
-    isSharedToAll: true
-    metadata: {
-      ApiType: 'Azure'
-      ResourceId: searchServiceResourceId
-      Location: location
-    }
-  }
-}
-
-// Connect the project to the KB storage account (AAD auth).
-resource storageConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = {
-  parent: aiProject
-  name: 'storage-connection'
-  properties: {
-    category: 'AzureBlob'
-    target: 'https://${storageAccountNameFromId}.blob.${environment().suffixes.storage}/'
-    authType: 'AAD'
-    isSharedToAll: true
-    metadata: {
-      ApiType: 'Azure'
-      ResourceId: storageAccountResourceId
-      AccountName: storageAccountNameFromId
-      ContainerName: kbContainerName
-      Location: location
-    }
-  }
-}
-
-// Wire Application Insights for agent/project tracing.
-resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = {
-  parent: aiProject
-  name: 'appinsights-connection'
-  properties: {
-    category: 'AppInsights'
-    target: applicationInsightsResourceId
-    authType: 'ApiKey'
-    isSharedToAll: true
-    credentials: {
-      key: applicationInsightsResourceId
-    }
-    metadata: {
-      ApiType: 'Azure'
-      ResourceId: applicationInsightsResourceId
-    }
-  }
-}
+// Project connections are intentionally NOT created in Bicep. The ARM contract
+// for CognitiveServices-based Foundry project connections is still preview and
+// unreliable for native tools. Switch/Trinity create AI Search, MCP Custom-Keys,
+// and telemetry connections data-plane in postprovision using the outputs below.
 
 // Grant the runtime managed identity the roles needed to use the project + models.
 resource miAiDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -229,6 +166,16 @@ resource miOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource searchOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aiFoundry.id, searchServicePrincipalId, cognitiveServicesOpenAIUserRoleId)
+  scope: aiFoundry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAIUserRoleId)
+    principalId: searchServicePrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Optionally grant the deploying user the same access for local dev.
 resource userAiDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
   name: guid(aiFoundry.id, principalId, azureAIDeveloperRoleId, 'user')
@@ -248,8 +195,28 @@ resource userOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = i
   }
 }
 
+resource userFoundryProjectManagerOnAccount 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
+  name: guid(aiFoundry.id, principalId, foundryProjectManagerRoleId, 'account')
+  scope: aiFoundry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectManagerRoleId)
+    principalId: principalId
+  }
+}
+
+resource userFoundryProjectManagerOnProject 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
+  name: guid(aiProject.id, principalId, foundryProjectManagerRoleId, 'project')
+  scope: aiProject
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectManagerRoleId)
+    principalId: principalId
+  }
+}
+
 // --- OUTPUTS (contract — do not change signatures) ---------------------------
 output aiFoundryName string = aiFoundry.name
+output aiFoundryPrincipalId string = aiFoundry.identity.principalId
 output projectName string = aiProject.name
+output projectPrincipalId string = aiProject.identity.principalId
 output projectEndpoint string = 'https://${toLower(aiFoundryName)}.services.ai.azure.com/api/projects/${aiProjectName}'
 output openAiEndpoint string = 'https://${toLower(aiFoundryName)}.openai.azure.com/'

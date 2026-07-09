@@ -83,13 +83,79 @@ def build_search_index() -> None:
         search_endpoint=env("AZURE_SEARCH_ENDPOINT"),
         index_name=env("AZURE_SEARCH_INDEX_NAME", required=False, default="it-helpdesk-kb"),
         embedding_deployment=env("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
+        openai_endpoint=env("AZURE_OPENAI_ENDPOINT", required=False, default=None),
     )
 
 
+def _derive_apim_service_name() -> str:
+    """APIM service name from the gateway/MCP URL host (apim-xxxx.azure-api.net -> apim-xxxx)."""
+    from urllib.parse import urlparse
+
+    for var in ("APIM_MCP_URL", "APIM_GATEWAY_URL"):
+        url = os.environ.get(var)
+        if url:
+            host = urlparse(url).hostname or ""
+            name = host.split(".")[0]
+            if name:
+                return name
+    return ""
+
+
+def resolve_apim_key() -> str:
+    """Resolve the APIM subscription key for the Incident agent's MCP tool.
+
+    Env override first (fast path / explicit override); otherwise fetch it at
+    runtime from the ``foundry-mcp-connection`` APIM subscription via ARM
+    ``listSecrets``. This fallback is required because azd does NOT inject
+    ``@secure()`` Bicep outputs (like APIM_SUBSCRIPTION_KEY) into the
+    postprovision hook environment, so a clean ``azd up`` has no env value.
+    """
+    key = os.environ.get("APIM_SUBSCRIPTION_KEY", "").strip()
+    if key:
+        print("[postprovision] APIM key sourced from env")
+        return key
+
+    import json
+    import urllib.request
+
+    from helpdesk.shared import get_credential
+
+    subscription_id = env("AZURE_SUBSCRIPTION_ID")
+    resource_group = env("AZURE_RESOURCE_GROUP")
+    service_name = _derive_apim_service_name()
+    if not service_name:
+        print("[postprovision] MISSING: cannot derive APIM service name from "
+              "APIM_MCP_URL/APIM_GATEWAY_URL", file=sys.stderr)
+        sys.exit(1)
+    sid = os.environ.get("APIM_MCP_SUBSCRIPTION_NAME", "foundry-mcp-connection")
+
+    token = get_credential().get_token("https://management.azure.com/.default").token
+    url = (
+        f"https://management.azure.com/subscriptions/{subscription_id}"
+        f"/resourceGroups/{resource_group}/providers/Microsoft.ApiManagement"
+        f"/service/{service_name}/subscriptions/{sid}/listSecrets"
+        "?api-version=2022-08-01"
+    )
+    req = urllib.request.Request(
+        url,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        data=b"",
+    )
+    with urllib.request.urlopen(req) as resp:  # noqa: S310 (trusted ARM endpoint)
+        payload = json.loads(resp.read().decode("utf-8"))
+    key = payload.get("primaryKey") or payload.get("secondaryKey") or ""
+    if not key:
+        print("[postprovision] APIM listSecrets returned no key", file=sys.stderr)
+        sys.exit(1)
+    print(f"[postprovision] APIM key fetched from APIM subscription '{sid}'")
+    return key
+
+
 def create_foundry_agents() -> None:
-    """STEP 3 — create/refresh the 3 Foundry agents and persist their IDs."""
+    """STEP 3 — create/refresh the triage + incident Prompt Agents."""
     if _mock():
-        print("[postprovision] MOCK: would create orchestrator/triage/incident agents")
+        print("[postprovision] MOCK: would create triage/incident Prompt Agents")
         return
 
     from helpdesk.agents.setup import create_foundry_agents as _create
@@ -97,6 +163,9 @@ def create_foundry_agents() -> None:
     _create(
         project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
+        search_endpoint=env("AZURE_SEARCH_ENDPOINT"),
+        apim_mcp_url=env("APIM_MCP_URL"),
+        apim_key=resolve_apim_key(),
     )
 
 

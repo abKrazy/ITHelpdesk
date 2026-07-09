@@ -8,6 +8,7 @@
   "searchSearchServices": "srch-",
   "cognitiveServicesAccounts": "aif-",
   "aiFoundryProjects": "proj-",
+  "containerRegistryRegistries": "acr",
   "apiManagementService": "apim-",
   "webServerFarms": "plan-",
   "webSitesAppService": "app-"

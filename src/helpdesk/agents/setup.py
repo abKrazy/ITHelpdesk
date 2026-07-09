@@ -3,8 +3,8 @@
 Two idempotent steps run after ``azd provision``:
   * :func:`build_search_index` — (re)create the Azure AI Search index over the KB
     (vector + keyword/semantic fields), chunk + embed the KB docs and upload them.
-  * :func:`create_foundry_agents` — create/refresh the orchestrator, triage and
-    incident agents in the Foundry project (new Foundry Agent experience, via
+  * :func:`create_foundry_agents` — create/refresh the triage and incident
+    Prompt Agents in the Foundry project (new Foundry Agent experience, via
     ``AIProjectClient.agents.create_version``) and persist their IDs via ``azd env set``.
 
 All Azure SDK imports are deferred into the functions so this module stays
@@ -17,11 +17,6 @@ import subprocess
 
 from .embeddings import EMBEDDING_DIMENSIONS
 from .kb import chunk_doc, load_local_kb
-from .prompts import (
-    INCIDENT_INSTRUCTIONS,
-    ORCHESTRATOR_INSTRUCTIONS,
-    TRIAGE_INSTRUCTIONS,
-)
 
 def _log(msg: str) -> None:
     print(f"[setup] {msg}")
@@ -30,8 +25,15 @@ def _log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 # STEP 2 — AI Search index
 # ---------------------------------------------------------------------------
-def _build_index_definition(index_name: str):
+def _build_index_definition(
+    index_name: str,
+    *,
+    openai_endpoint: str | None = None,
+    embedding_deployment: str | None = None,
+):
     from azure.search.documents.indexes.models import (
+        AzureOpenAIVectorizer,
+        AzureOpenAIVectorizerParameters,
         HnswAlgorithmConfiguration,
         SearchableField,
         SearchField,
@@ -67,13 +69,35 @@ def _build_index_definition(index_name: str):
             vector_search_profile_name="kb-hnsw-profile",
         ),
     ]
+    # Integrated vectorizer: lets the native Foundry AI Search Knowledge tool
+    # embed the query text at search time (required for vector_semantic_hybrid).
+    # Authenticates as the Search service's system-assigned managed identity
+    # (auth_identity=None + no api_key) — the MI is granted "Cognitive Services
+    # OpenAI User" on the Foundry account.
+    vectorizer_name = "kb-openai-vectorizer"
+    vectorizers = None
+    if openai_endpoint and embedding_deployment:
+        vectorizers = [
+            AzureOpenAIVectorizer(
+                vectorizer_name=vectorizer_name,
+                parameters=AzureOpenAIVectorizerParameters(
+                    resource_url=openai_endpoint,
+                    deployment_name=embedding_deployment,
+                    model_name="text-embedding-3-large",
+                    auth_identity=None,
+                ),
+            )
+        ]
     vector_search = VectorSearch(
         algorithms=[HnswAlgorithmConfiguration(name="kb-hnsw")],
         profiles=[
             VectorSearchProfile(
-                name="kb-hnsw-profile", algorithm_configuration_name="kb-hnsw"
+                name="kb-hnsw-profile",
+                algorithm_configuration_name="kb-hnsw",
+                vectorizer_name=vectorizer_name if vectorizers else None,
             )
         ],
+        vectorizers=vectorizers,
     )
     semantic_search = SemanticSearch(
         configurations=[
@@ -117,6 +141,7 @@ def build_search_index(
     search_endpoint: str,
     index_name: str,
     embedding_deployment: str,
+    openai_endpoint: str | None = None,
 ) -> None:
     """Create/refresh the KB search index and upload embedded chunks. Idempotent."""
     from azure.search.documents import SearchClient
@@ -128,7 +153,11 @@ def build_search_index(
     credential = get_credential()
 
     index_client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
-    index = _build_index_definition(index_name)
+    index = _build_index_definition(
+        index_name,
+        openai_endpoint=openai_endpoint,
+        embedding_deployment=embedding_deployment,
+    )
     index_client.create_or_update_index(index)  # idempotent
     _log(f"index '{index_name}' created/updated on {search_endpoint}")
 
@@ -163,14 +192,9 @@ def build_search_index(
 # ---------------------------------------------------------------------------
 # STEP 3 — Foundry agents
 # ---------------------------------------------------------------------------
-_AGENT_SPECS = [
-    ("it-helpdesk-triage", TRIAGE_INSTRUCTIONS),
-    ("it-helpdesk-incident", INCIDENT_INSTRUCTIONS),
-    ("it-helpdesk-orchestrator", ORCHESTRATOR_INSTRUCTIONS),
-]
+_AGENT_NAMES = ("it-helpdesk-triage", "it-helpdesk-incident")
 
 _AGENT_ID_ENV = {
-    "it-helpdesk-orchestrator": "AZURE_AI_ORCHESTRATOR_AGENT_ID",
     "it-helpdesk-triage": "AZURE_AI_TRIAGE_AGENT_ID",
     "it-helpdesk-incident": "AZURE_AI_INCIDENT_AGENT_ID",
 }
@@ -188,8 +212,11 @@ def create_foundry_agents(
     *,
     project_endpoint: str,
     chat_deployment: str,
+    search_endpoint: str,
+    apim_mcp_url: str,
+    apim_key: str,
 ) -> dict[str, str]:
-    """Create/refresh the 3 Foundry agents and persist their IDs. Idempotent.
+    """Create/refresh the triage + incident Prompt Agents and persist IDs.
 
     Uses the **new** Azure AI Foundry Agent experience: agents are versioned
     *Prompt Agents* created through ``AIProjectClient.agents.create_version`` on
@@ -202,11 +229,21 @@ def create_foundry_agents(
     ``AgentDetails.id``); that stable name is what we persist and what the runtime
     references. ``create_version`` is idempotent-friendly: re-running publishes a
     new version of the same named agent rather than duplicating it.
+
+    The custom Orchestrator is intentionally not created here in Phase 1; Phase 2
+    will publish it as a Microsoft Agent Framework Hosted Agent.
     """
     from azure.ai.projects import AIProjectClient
-    from azure.ai.projects.models import PromptAgentDefinition
 
     from ..shared import get_credential
+    from .definitions.incident_agent import (
+        INCIDENT_INSTRUCTIONS,
+        build_incident_definition,
+    )
+    from .definitions.triage_agent import build_triage_definition, ensure_search_connection
+
+    if not INCIDENT_INSTRUCTIONS:
+        raise RuntimeError("Incident Prompt Agent instructions must not be empty.")
 
     ids: dict[str, str] = {}
     with AIProjectClient(endpoint=project_endpoint, credential=get_credential()) as project:
@@ -220,12 +257,24 @@ def create_foundry_agents(
         except Exception as exc:  # pragma: no cover - live-only
             _log(f"WARNING: could not list existing agents ({exc}); creating fresh.")
 
-        for name, instructions in _AGENT_SPECS:
+        search_connection_id = ensure_search_connection(project, search_endpoint=search_endpoint)
+
+        definitions = {
+            "it-helpdesk-triage": build_triage_definition(
+                chat_deployment=chat_deployment,
+                search_connection_id=search_connection_id,
+            ),
+            "it-helpdesk-incident": build_incident_definition(
+                chat_deployment=chat_deployment,
+                apim_mcp_url=apim_mcp_url,
+                apim_key=apim_key,
+            ),
+        }
+
+        for name in _AGENT_NAMES:
             version = project.agents.create_version(
                 agent_name=name,
-                definition=PromptAgentDefinition(
-                    model=chat_deployment, instructions=instructions
-                ),
+                definition=definitions[name],
             )
             # AgentVersionDetails.name is the stable agent id (== AgentDetails.id).
             agent_id = getattr(version, "name", None) or name

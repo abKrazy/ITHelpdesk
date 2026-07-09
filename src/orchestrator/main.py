@@ -46,6 +46,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -616,7 +617,120 @@ def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
 
 
 # --- Sub-agent streaming proxy -------------------------------------------------
-def _iter_prompt_agent_text(agent_name: str, message: str) -> Iterator[str]:
+# KB citation side-channel. The triage sub-agent's KB (Azure AI Search agentic
+# retrieval, via the ``knowledge_base_retrieve`` MCP tool) forces every answer to
+# carry inline citation markers of the shape ``【message_idx:search_idx†source】``.
+# The ``†source`` segment is a GENERIC literal ("source") — it is NOT a document
+# title. The REAL source metadata (friendly title, filename, doc_id, assignment
+# group) lives only in the MCP tool's ``mcp_call`` output, which the model prefixes
+# with the SAME ``【m:s†source】`` header before each retrieved document's JSON. We
+# parse that output to map each marker -> its document, then emit a structured
+# ``citations`` side-channel so the UI can render clean numbered references
+# (``[1]``, ``[2]``…) and a "Sources:" list WITHOUT us mutating the answer text.
+CITATIONS_TOOL_NAME = "citations"
+# Full-width brackets 【 (U+3010) … 】 (U+3011) with a dagger † (U+2020) separator.
+_MARKER_RE = re.compile(r"\u3010(\d+):(\d+)\u2020[^\u3011]*\u3011")
+_SOURCE_URL_PREFIX = "mcp://searchindex/"
+
+
+def _first_json_object(text: str) -> dict | None:
+    """Decode the FIRST JSON object embedded in ``text`` (ignoring trailing prose).
+
+    The MCP tool output places a document's JSON right after its citation-marker
+    header, sometimes followed by non-JSON text (e.g. ``Visible: 0% - 100%``). We
+    locate the first ``{`` and let the JSON decoder consume just that object.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[start:])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parse_mcp_output_chunks(output: str) -> dict[str, dict[str, Any]]:
+    """Map each inline marker ``【m:s†…】`` -> its document metadata.
+
+    The ``knowledge_base_retrieve`` MCP call returns a blob that repeats, for every
+    retrieved chunk, a ``【m:s†source】`` header followed by that chunk's JSON
+    (``id``, ``doc_id``, ``title``, ``source``, ``assignment_group``, …). We split
+    on the markers and parse each following JSON so the marker the model cites can
+    be resolved to a REAL title/filename/doc.
+    """
+    chunks: dict[str, dict[str, Any]] = {}
+    matches = list(_MARKER_RE.finditer(output or ""))
+    for i, match in enumerate(matches):
+        marker = match.group(0)
+        blob_start = match.end()
+        blob_end = matches[i + 1].start() if i + 1 < len(matches) else len(output)
+        obj = _first_json_object(output[blob_start:blob_end])
+        if obj is None:
+            continue
+        chunks[marker] = {
+            "chunkId": obj.get("id"),
+            "docId": obj.get("doc_id"),
+            "title": obj.get("title"),
+            "source": obj.get("source"),
+            "assignmentGroup": obj.get("assignment_group"),
+        }
+    return chunks
+
+
+def _build_citations(
+    full_text: str,
+    chunk_map: dict[str, dict[str, Any]],
+    ann_urls: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Build the ordered ``citations`` list from the answer text + resolved chunks.
+
+    Numbering is by SOURCE (a document, keyed by ``doc_id`` when available), in the
+    order each source's first marker appears in the answer. Every distinct marker
+    that points at the same document collapses to the same ``index`` (so repeated
+    markers, and different chunks of the same doc, share one ``[n]``). Each entry
+    lists ALL markers/chunk ids that map to it so the UI can replace every inline
+    ``【…】`` occurrence with the source's number.
+    """
+    order: list[str] = []
+    by_source: dict[str, dict[str, Any]] = {}
+    for match in _MARKER_RE.finditer(full_text):
+        marker = match.group(0)
+        meta = chunk_map.get(marker, {})
+        chunk_id = meta.get("chunkId")
+        source_id = meta.get("docId") or chunk_id or marker
+        entry = by_source.get(source_id)
+        if entry is None:
+            entry = {
+                "index": len(order) + 1,
+                "sourceId": source_id,
+                "sourceTitle": meta.get("title"),
+                "sourceName": meta.get("source"),
+                "assignmentGroup": meta.get("assignmentGroup"),
+                "markers": [],
+                "chunkIds": [],
+                "url": ann_urls.get(chunk_id)
+                or (f"{_SOURCE_URL_PREFIX}{chunk_id}" if chunk_id else None),
+            }
+            by_source[source_id] = entry
+            order.append(source_id)
+        if marker not in entry["markers"]:
+            entry["markers"].append(marker)
+        if chunk_id and chunk_id not in entry["chunkIds"]:
+            entry["chunkIds"].append(chunk_id)
+    return [by_source[s] for s in order]
+
+
+class _CitationsFrame:
+    """Terminal side-channel item carrying the resolved KB citations for a turn."""
+
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        self.items = items
+
+
+def _iter_prompt_agent_text(
+    agent_name: str, message: str, *, citations_sink: list | None = None
+) -> Iterator[str]:
     """Stream a Foundry Prompt Agent by *agent reference*, yielding TEXT deltas only.
 
     We forward ONLY ``response.output_text.delta`` events. The sub-agent's own
@@ -624,7 +738,13 @@ def _iter_prompt_agent_text(agent_name: str, message: str) -> Iterator[str]:
     ride other event types on this inner stream; we deliberately drop those so they
     never surface as spurious ``function_call`` items (bogus handoff chips) on the
     OUTER Responses stream the UI consumes. Citations (【…†source】) arrive inline in
-    the text deltas, so they are preserved verbatim.
+    the text deltas, so they are preserved verbatim in the streamed answer.
+
+    When ``citations_sink`` is provided we ADDITIONALLY (a) parse the KB
+    ``mcp_call`` output for the real per-marker document metadata and (b) collect
+    annotation URLs, then populate ``citations_sink`` with the resolved,
+    per-source citation list. This never alters the yielded text — it is a pure
+    side-channel read off the same inner stream.
     """
     client = _get_openai_client()
     model = _MODEL_BY_AGENT.get(agent_name, MODEL)
@@ -634,18 +754,46 @@ def _iter_prompt_agent_text(agent_name: str, message: str) -> Iterator[str]:
         stream=True,
         extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
     )
+    text_parts: list[str] = []
+    chunk_map: dict[str, dict[str, Any]] = {}
+    ann_urls: dict[str, str] = {}
     for event in stream:
-        if getattr(event, "type", None) == "response.output_text.delta":
+        etype = getattr(event, "type", None)
+        if etype == "response.output_text.delta":
             delta = getattr(event, "delta", None)
             if delta:
+                if citations_sink is not None:
+                    text_parts.append(str(delta))
                 yield str(delta)
+        elif citations_sink is None:
+            continue
+        elif etype == "response.output_item.done":
+            item = getattr(event, "item", None)
+            if getattr(item, "type", None) == "mcp_call":
+                out = getattr(item, "output", None)
+                if out:
+                    chunk_map.update(_parse_mcp_output_chunks(str(out)))
+        elif etype == "response.output_text.annotation.added":
+            ann = getattr(event, "annotation", None)
+            url = getattr(ann, "url", None)
+            title = getattr(ann, "title", None)
+            cid = str(title or url or "").replace(_SOURCE_URL_PREFIX, "").strip()
+            if cid and url:
+                ann_urls[cid] = str(url)
+    if citations_sink is not None:
+        citations_sink.extend(
+            _build_citations("".join(text_parts), chunk_map, ann_urls)
+        )
 
 
-async def _astream_prompt_agent(agent_name: str, message: str) -> AsyncIterator[str]:
+async def _astream_prompt_agent(agent_name: str, message: str) -> AsyncIterator[Any]:
     """Async wrapper over the sync sub-agent stream, wrapped in a handoff span.
 
     Bridges the blocking OpenAI stream onto the event loop via a worker thread and
     a queue so the host can flush each token frame without stalling other requests.
+    Yields ``str`` text deltas as they arrive, then — for a KB turn that produced
+    citations — one terminal :class:`_CitationsFrame` carrying the resolved source
+    list, so the caller can emit it as the ``citations`` side-channel item.
     """
     tracer = _get_tracer()
     span_cm = (
@@ -667,10 +815,13 @@ async def _astream_prompt_agent(agent_name: str, message: str) -> AsyncIterator[
     queue: asyncio.Queue = asyncio.Queue()
     sentinel = object()
     collected: list[str] = []
+    citations_sink: list[dict[str, Any]] = []
 
     def _worker() -> None:
         try:
-            for delta in _iter_prompt_agent_text(agent_name, message):
+            for delta in _iter_prompt_agent_text(
+                agent_name, message, citations_sink=citations_sink
+            ):
                 loop.call_soon_threadsafe(queue.put_nowait, delta)
         except Exception as exc:  # surface to the async side
             loop.call_soon_threadsafe(queue.put_nowait, exc)
@@ -690,6 +841,11 @@ async def _astream_prompt_agent(agent_name: str, message: str) -> AsyncIterator[
             collected.append(item)
             yield item
         await worker
+        # After the full answer text has streamed, emit the resolved KB citations
+        # as ONE terminal side-channel frame (turned into a ``citations``
+        # function_call on the outer stream). This never touches the token text.
+        if citations_sink:
+            yield _CitationsFrame(citations_sink)
     finally:
         if span_cm is not None:
             if _content_recording_enabled():
@@ -734,12 +890,27 @@ class RelayOrchestrator(BaseAgent):
                 role="assistant",
             )
             # 2) Stream the sub-agent's answer through verbatim as the terminal text.
-            async for delta in _astream_prompt_agent(
+            #    A trailing _CitationsFrame (KB turns only) is emitted as a dedicated
+            #    ``citations`` function_call item — a structured side-channel the UI
+            #    reads to render numbered references without us touching the answer.
+            async for item in _astream_prompt_agent(
                 decision.agent_name, decision.sub_agent_input or ""
             ):
-                yield AgentResponseUpdate(
-                    contents=[Content.from_text(delta)], role="assistant"
-                )
+                if isinstance(item, _CitationsFrame):
+                    yield AgentResponseUpdate(
+                        contents=[
+                            Content.from_function_call(
+                                f"call_{uuid.uuid4().hex[:24]}",
+                                CITATIONS_TOOL_NAME,
+                                arguments=json.dumps({"citations": item.items}),
+                            )
+                        ],
+                        role="assistant",
+                    )
+                else:
+                    yield AgentResponseUpdate(
+                        contents=[Content.from_text(item)], role="assistant"
+                    )
         else:
             text = decision.direct_text or _NO_ROUTE_FALLBACK
             yield AgentResponseUpdate(

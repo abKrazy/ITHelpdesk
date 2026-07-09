@@ -305,6 +305,200 @@ def test_iter_prompt_agent_text_forwards_only_output_text_delta(
     assert out == ["1. Restart. ", "See [1]\u2020source."]
 
 
+# --- KB citation side-channel -------------------------------------------------
+_MCP_OUTPUT = (
+    "Retrieved 5 documents.\n\n"
+    "\u30105:0\u2020source\u3011\n"
+    '{"id":"laptop-performance-2","doc_id":"laptop-performance",'
+    '"title":"Laptop Running Slow","source":"laptop-performance.md",'
+    '"assignment_group":"Desktop Support","content":"steps"}\n'
+    "\u30105:1\u2020source\u3011\n"
+    '{"id":"laptop-performance-3","doc_id":"laptop-performance",'
+    '"title":"Laptop Running Slow","source":"laptop-performance.md",'
+    '"assignment_group":"Desktop Support"}\n'
+    "\u30105:4\u2020source\u3011\n"
+    '{"id":"laptop-performance-4","doc_id":"laptop-performance",'
+    '"title":"Laptop Running Slow","source":"laptop-performance.md",'
+    '"assignment_group":"Desktop Support"}\nVisible: 0% - 100%"'
+)
+_ANSWER_TEXT = (
+    "1. Restart.\u30105:0\u2020source\u3011\u30105:1\u2020source\u3011"
+    "\u30105:4\u2020source\u3011\n\nRecommended Assignment Group: Desktop "
+    "Support.\u30105:4\u2020source\u3011\n\nNo ticket yet."
+)
+
+
+def test_parse_mcp_output_chunks_resolves_real_titles(orchestrator_main) -> None:
+    """The KB mcp_call output carries the REAL per-marker document metadata
+    (friendly title + filename + doc_id), which the inline ``†source`` marker does
+    NOT. Parsing it must map each marker to its document."""
+    chunks = orchestrator_main._parse_mcp_output_chunks(_MCP_OUTPUT)
+    assert chunks["\u30105:0\u2020source\u3011"] == {
+        "chunkId": "laptop-performance-2",
+        "docId": "laptop-performance",
+        "title": "Laptop Running Slow",
+        "source": "laptop-performance.md",
+        "assignmentGroup": "Desktop Support",
+    }
+    assert chunks["\u30105:4\u2020source\u3011"]["chunkId"] == "laptop-performance-4"
+
+
+def test_build_citations_dedupes_by_source_and_numbers_by_appearance(
+    orchestrator_main,
+) -> None:
+    """Distinct markers pointing at the same document collapse to ONE numbered
+    source; every marker that maps to it is listed so the UI can replace each
+    inline ``【…】`` with the same ``[n]``. Repeated markers do not add entries."""
+    chunks = orchestrator_main._parse_mcp_output_chunks(_MCP_OUTPUT)
+    cits = orchestrator_main._build_citations(_ANSWER_TEXT, chunks, {})
+    assert len(cits) == 1
+    entry = cits[0]
+    assert entry["index"] == 1
+    assert entry["sourceTitle"] == "Laptop Running Slow"
+    assert entry["sourceName"] == "laptop-performance.md"
+    assert entry["sourceId"] == "laptop-performance"
+    assert entry["markers"] == [
+        "\u30105:0\u2020source\u3011",
+        "\u30105:1\u2020source\u3011",
+        "\u30105:4\u2020source\u3011",
+    ]
+    assert entry["chunkIds"] == [
+        "laptop-performance-2",
+        "laptop-performance-3",
+        "laptop-performance-4",
+    ]
+
+
+def test_build_citations_two_distinct_docs_get_sequential_numbers(
+    orchestrator_main,
+) -> None:
+    """Two different documents -> two numbered sources in first-appearance order."""
+    chunks = {
+        "\u30101:0\u2020source\u3011": {
+            "chunkId": "vpn-1",
+            "docId": "vpn-connect",
+            "title": "VPN Connection",
+            "source": "vpn-connect.md",
+            "assignmentGroup": "Network",
+        },
+        "\u30101:1\u2020source\u3011": {
+            "chunkId": "pw-1",
+            "docId": "password-reset",
+            "title": "Password Reset",
+            "source": "password-reset.md",
+            "assignmentGroup": "Identity",
+        },
+    }
+    text = "A\u30101:0\u2020source\u3011 then B\u30101:1\u2020source\u3011 end."
+    cits = orchestrator_main._build_citations(text, chunks, {})
+    assert [c["index"] for c in cits] == [1, 2]
+    assert [c["sourceTitle"] for c in cits] == ["VPN Connection", "Password Reset"]
+
+
+def test_build_citations_empty_when_no_markers(orchestrator_main) -> None:
+    assert orchestrator_main._build_citations("no markers here", {}, {}) == []
+
+
+def test_iter_prompt_agent_text_populates_citations_sink(
+    orchestrator_main, monkeypatch
+) -> None:
+    """With a sink provided, the proxy reads the mcp_call output + annotations off
+    the SAME inner stream and resolves citations — WITHOUT altering yielded text."""
+    events = [
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(type="mcp_call", output=_MCP_OUTPUT),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="1. Restart."),
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="\u30105:0\u2020source\u3011\u30105:1\u2020source\u3011",
+        ),
+        SimpleNamespace(
+            type="response.output_text.annotation.added",
+            annotation=SimpleNamespace(
+                type="url_citation",
+                title="mcp://searchindex/laptop-performance-2",
+                url="mcp://searchindex/laptop-performance-2",
+            ),
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            return iter(events)
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    monkeypatch.setattr(orchestrator_main, "_get_openai_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        orchestrator_main,
+        "_MODEL_BY_AGENT",
+        {"it-helpdesk-triage": "gpt-5.4-mini", "it-helpdesk-incident": "gpt-5.4"},
+    )
+
+    sink: list = []
+    out = list(
+        orchestrator_main._iter_prompt_agent_text(
+            "it-helpdesk-triage", "laptop slow", citations_sink=sink
+        )
+    )
+    # Text is byte-equivalent to the deltas (markers preserved inline).
+    assert out == ["1. Restart.", "\u30105:0\u2020source\u3011\u30105:1\u2020source\u3011"]
+    assert len(sink) == 1
+    assert sink[0]["sourceTitle"] == "Laptop Running Slow"
+    assert sink[0]["url"] == "mcp://searchindex/laptop-performance-2"
+
+
+def test_run_stream_emits_terminal_citations_frame(
+    orchestrator_main, monkeypatch
+) -> None:
+    """A KB turn's citations surface as a terminal ``citations`` function_call
+    item AFTER the text — a structured side-channel, not part of the answer text.
+    The handoff chip stays first and the token text is unchanged."""
+    decision = orchestrator_main.RouteDecision(
+        tool_name="troubleshoot_from_knowledge_base",
+        agent_name="it-helpdesk-triage",
+        sub_agent_input="laptop slow",
+        call_id="call_123",
+        arguments_json='{"problem":"laptop slow"}',
+    )
+    monkeypatch.setattr(orchestrator_main, "_route_intent", lambda items: decision)
+
+    citations = [
+        {
+            "index": 1,
+            "sourceId": "laptop-performance",
+            "sourceTitle": "Laptop Running Slow",
+            "sourceName": "laptop-performance.md",
+            "markers": ["\u30105:0\u2020source\u3011"],
+        }
+    ]
+
+    async def _fake_astream(agent_name, message):
+        yield "1. Restart.\u30105:0\u2020source\u3011"
+        yield orchestrator_main._CitationsFrame(citations)
+
+    monkeypatch.setattr(orchestrator_main, "_astream_prompt_agent", _fake_astream)
+
+    agent = orchestrator_main.build_agent()
+    updates = _drain_stream(agent.run(messages="my laptop is slow", stream=True))
+
+    # chip -> text -> citations function_call (in that order).
+    assert updates[0].contents[0].type == "function_call"
+    assert updates[0].contents[0].name == "troubleshoot_from_knowledge_base"
+    assert updates[1].contents[0].type == "text"
+    assert updates[1].contents[0].text == "1. Restart.\u30105:0\u2020source\u3011"
+    last = updates[-1].contents[0]
+    assert last.type == "function_call"
+    assert last.name == "citations"
+    payload = json.loads(last.arguments)
+    assert payload["citations"][0]["sourceTitle"] == "Laptop Running Slow"
+    assert payload["citations"][0]["index"] == 1
+
+
 def test_run_stream_emits_chip_then_text(orchestrator_main, monkeypatch) -> None:
     """GOLDEN SSE SHAPE: streaming a routed turn yields the handoff function_call
     chip FIRST (so the UI shows "Calling Triage Agent"), then the sub-agent's text

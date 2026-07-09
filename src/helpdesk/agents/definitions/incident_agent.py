@@ -9,10 +9,12 @@ Decision: ``build_incident_definition`` requires ``apim_mcp_url`` explicitly so
 post-provisioning can pass the locked APIM output (`{gateway}/servicenow/mcp`)
 without relying on ambient environment state. MCP auth is attached via a Foundry
 **project connection** (a ``RemoteTool`` connection created control-plane in
-Bicep) referenced by ``mcp_connection_id`` — the APIM subscription key lives in
-the connection secret store, never inline in the agent definition, and the tool
-surfaces in the Foundry portal Connections/Tools tab. Azure SDK imports stay
-inside functions so this module imports cleanly in offline tests.
+Bicep) referenced by ``mcp_connection_id`` — which is the connection **name**
+(e.g. ``servicenow-apim-mcp``), matching how the triage Search tool references
+its connection so the portal links the tool to the connection in the
+Tools/Connections tab. The APIM subscription key lives in the connection secret
+store, never inline in the agent definition. Azure SDK imports stay inside
+functions so this module imports cleanly in offline tests.
 """
 
 from __future__ import annotations
@@ -62,8 +64,8 @@ def build_incident_definition(
     """Build the native Foundry ``PromptAgentDefinition`` with an APIM MCP tool.
 
     The MCP tool authenticates through the Foundry project connection identified
-    by ``mcp_connection_id`` (full ARM resource id of a ``RemoteTool``
-    connection). No subscription-key header is attached inline.
+    by ``mcp_connection_id`` (the connection **name**, e.g. ``servicenow-apim-mcp``).
+    No subscription-key header is attached inline.
     """
 
     if not chat_deployment:

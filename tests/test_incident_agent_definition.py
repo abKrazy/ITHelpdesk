@@ -39,7 +39,7 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     definition = incident_agent.build_incident_definition(
         chat_deployment="gpt-4o",
         apim_mcp_url="https://apim.azure-api.net/servicenow/mcp",
-        mcp_connection_id="/subscriptions/x/connections/servicenow-apim-mcp",
+        mcp_connection_id="servicenow-apim-mcp",
     )
 
     assert definition.model == "gpt-4o"
@@ -49,4 +49,4 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     assert tool.server_label == "servicenow-apim"
     assert tool.server_url == "https://apim.azure-api.net/servicenow/mcp"
     assert tool.require_approval == "never"
-    assert tool.project_connection_id == "/subscriptions/x/connections/servicenow-apim-mcp"
+    assert tool.project_connection_id == "servicenow-apim-mcp"

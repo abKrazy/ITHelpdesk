@@ -117,7 +117,10 @@ def create_foundry_agents() -> None:
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         search_endpoint=env("AZURE_SEARCH_ENDPOINT"),
         apim_mcp_url=env("APIM_MCP_URL"),
-        mcp_connection_id=env("AZURE_AI_MCP_CONNECTION_ID"),
+        # Reference the MCP connection by NAME (not full ARM id) so the portal
+        # links the tool to the connection and shows it in the Tools/Connections
+        # tab — mirrors how the triage Search tool references its connection.
+        mcp_connection_id=env("AZURE_AI_MCP_CONNECTION_NAME"),
     )
 
 

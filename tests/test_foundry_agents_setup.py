@@ -132,7 +132,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
         chat_deployment="gpt-4o",
         search_endpoint="https://search.example.net",
         apim_mcp_url="https://apim.example.net/mcp",
-        mcp_connection_id="/subscriptions/x/connections/servicenow-apim-mcp",
+        mcp_connection_id="servicenow-apim-mcp",
     )
 
     # One native-tool Prompt Agent per Phase 1 spec; no orchestrator Prompt Agent.
@@ -157,9 +157,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     )
     assert created["it-helpdesk-incident"].model == "gpt-4o"
     assert created["it-helpdesk-incident"].instructions == "incident instructions"
-    assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == (
-        "/subscriptions/x/connections/servicenow-apim-mcp"
-    )
+    assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == "servicenow-apim-mcp"
 
     # IDs persisted via azd env under the expected variable names.
     assert persisted[setup._AGENT_ID_ENV["it-helpdesk-triage"]] == "it-helpdesk-triage"

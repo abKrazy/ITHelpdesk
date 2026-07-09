@@ -150,3 +150,46 @@ def test_create_hosted_orchestrator_honours_protocol_version_override(
 
     call = _FakeProjectClient.instances[-1].agents.create_calls[0]
     assert call["definition"].protocol_versions[0].version == "9.9.9"
+
+
+def test_create_hosted_orchestrator_injects_appinsights_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
+
+    conn = "InstrumentationKey=abc;IngestionEndpoint=https://x.in.applicationinsights.azure.com/"
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-4o",
+        image="acr/it-helpdesk-orchestrator:latest",
+        applicationinsights_connection_string=conn,
+    )
+
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0]["definition"].environment_variables
+    assert env["APPLICATIONINSIGHTS_CONNECTION_STRING"] == conn
+    assert env["OTEL_SERVICE_NAME"] == "it-helpdesk-orchestrator"
+    assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"
+
+
+def test_create_hosted_orchestrator_omits_telemetry_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
+
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-4o",
+        image="acr/it-helpdesk-orchestrator:latest",
+    )
+
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0]["definition"].environment_variables
+    assert "APPLICATIONINSIGHTS_CONNECTION_STRING" not in env
+    assert "OTEL_SERVICE_NAME" not in env

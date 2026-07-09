@@ -51,6 +51,13 @@ param searchEndpoint string
 @description('Azure AI Search service resource ID (connection metadata).')
 param searchResourceId string
 
+@description('Application Insights resource ID (AppInsights connection target + metadata).')
+param applicationInsightsResourceId string
+
+@description('Application Insights connection string, stored as the AppInsights connection credential.')
+@secure()
+param applicationInsightsConnectionString string
+
 // Role definition IDs (built-in).
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
@@ -158,6 +165,32 @@ resource searchConnection 'Microsoft.CognitiveServices/accounts/projects/connect
   }
 }
 
+// Application Insights connection backing Foundry tracing/observability. Creating
+// it control-plane here (the azure-ai-projects 2.x data-plane SDK has no connection
+// *create* API — only get/list/get_default) lights up the portal Tracing tab and
+// lets AIProjectClient(...).telemetry.get_connection_string() resolve a connection.
+// Shape verified against Azure-Samples/foundry-hosted-agentframework-demos
+// (infra/core/ai/ai-project.bicep): category 'AppInsights', authType 'ApiKey',
+// target = App Insights resource ID, credentials.key = App Insights connection
+// string, metadata { ApiType: 'Azure', ResourceId: <App Insights resource ID> }.
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = {
+  parent: aiProject
+  name: '${aiProjectName}-appinsights'
+  properties: {
+    category: 'AppInsights'
+    target: applicationInsightsResourceId
+    authType: 'ApiKey'
+    isSharedToAll: true
+    credentials: {
+      key: applicationInsightsConnectionString
+    }
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: applicationInsightsResourceId
+    }
+  }
+}
+
 // Grant the runtime managed identity the roles needed to use the project + models.
 resource miAiDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(aiFoundry.id, managedIdentityPrincipalId, azureAIDeveloperRoleId)
@@ -244,3 +277,4 @@ output projectPrincipalId string = aiProject.identity.principalId
 output projectEndpoint string = 'https://${toLower(aiFoundryName)}.services.ai.azure.com/api/projects/${aiProjectName}'
 output openAiEndpoint string = 'https://${toLower(aiFoundryName)}.openai.azure.com/'
 output searchConnectionName string = searchConnection.name
+output appInsightsConnectionName string = appInsightsConnection.name

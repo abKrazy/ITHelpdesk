@@ -331,6 +331,7 @@ def create_hosted_orchestrator(
     cpu: str = "1",
     memory: str = "2Gi",
     responses_version: str | None = None,
+    applicationinsights_connection_string: str | None = None,
 ) -> str:
     """Register the MAF orchestrator container as a Foundry **Hosted Agent**.
 
@@ -344,8 +345,9 @@ def create_hosted_orchestrator(
     of the same named agent. Foundry **reserves** and auto-injects all ``FOUNDRY_*``
     and ``AGENT_*`` environment variables (including ``FOUNDRY_PROJECT_ENDPOINT``),
     so we must NOT set them here — the registration API rejects reserved keys. We
-    only pass the non-reserved vars the container needs (the model deployment and
-    the sub-agent names).
+    only pass the non-reserved vars the container needs (the model deployment, the
+    sub-agent names, and — when available — the App Insights connection string plus
+    OTEL/GenAI tracing toggles so the running container can export traces).
     """
     from azure.ai.projects import AIProjectClient
     from azure.ai.projects.models import (
@@ -370,6 +372,19 @@ def create_hosted_orchestrator(
         "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
         "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
     }
+    # Telemetry: give the hosted container the App Insights connection string so the
+    # running orchestrator (once Trinity adds the instrumentation) exports traces to
+    # the same App Insights the Foundry project is connected to. APPLICATIONINSIGHTS_*
+    # is NOT reserved (unlike FOUNDRY_*/AGENT_*), so it is safe to set here. Read from
+    # the environment — never hardcode the connection string.
+    appinsights_conn = (
+        applicationinsights_connection_string
+        or os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+    ).strip()
+    if appinsights_conn:
+        environment_variables["APPLICATIONINSIGHTS_CONNECTION_STRING"] = appinsights_conn
+        environment_variables["OTEL_SERVICE_NAME"] = "it-helpdesk-orchestrator"
+        environment_variables["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = "true"
     definition = HostedAgentDefinition(
         cpu=cpu,
         memory=memory,

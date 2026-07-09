@@ -197,6 +197,11 @@ module foundry './modules/foundry.bicep' = {
     searchServicePrincipalId: search.outputs.principalId
     searchEndpoint: search.outputs.endpoint
     searchResourceId: search.outputs.resourceId
+    // Thread the App Insights resource ID + connection string so foundry.bicep can
+    // create the control-plane AppInsights project connection (lights up the portal
+    // Tracing tab + lets the SDK resolve the telemetry connection).
+    applicationInsightsResourceId: monitoring.outputs.applicationInsightsResourceId
+    applicationInsightsConnectionString: monitoring.outputs.applicationInsightsConnectionString
   }
 }
 
@@ -342,6 +347,7 @@ output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = embeddingModelDeploymentName
 // the ServiceNow MCP RemoteTool connection by the mcp-connection module. The
 // Incident agent references the MCP connection by this id (no inline APIM key).
 output AZURE_AI_SEARCH_CONNECTION_NAME string = foundry.outputs.searchConnectionName
+output AZURE_AI_APPINSIGHTS_CONNECTION_NAME string = foundry.outputs.appInsightsConnectionName
 output AZURE_AI_MCP_CONNECTION_ID string = mcpConnection.outputs.connectionId
 output AZURE_AI_MCP_CONNECTION_NAME string = mcpConnection.outputs.connectionName
 

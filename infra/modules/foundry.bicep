@@ -115,8 +115,10 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-0
     model: {
       format: 'OpenAI'
       name: chatModelName
+      version: '2026-03-05'
     }
-    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+    // Pinning an explicit model version is incompatible with auto-upgrade.
+    versionUpgradeOption: 'NoAutoUpgrade'
     raiPolicyName: 'Microsoft.DefaultV2'
   }
 }

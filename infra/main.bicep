@@ -57,10 +57,10 @@ param serviceNowPassword string
 
 // --- Model deployment knobs (Trinity/Tank tune) ------------------------------
 @description('Chat model deployment name used by the agents.')
-param chatModelDeploymentName string = 'gpt-4o'
+param chatModelDeploymentName string = 'gpt-5.4'
 
 @description('Chat model name to deploy in Foundry.')
-param chatModelName string = 'gpt-4o'
+param chatModelName string = 'gpt-5.4'
 
 @description('Embedding model deployment name used to index KB docs.')
 param embeddingModelDeploymentName string = 'text-embedding-3-large'

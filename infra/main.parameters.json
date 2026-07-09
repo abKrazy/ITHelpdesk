@@ -21,10 +21,10 @@
       "value": "${SERVICENOW_PASSWORD}"
     },
     "chatModelDeploymentName": {
-      "value": "${AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o}"
+      "value": "${AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4}"
     },
     "chatModelName": {
-      "value": "${AZURE_OPENAI_CHAT_MODEL=gpt-4o}"
+      "value": "${AZURE_OPENAI_CHAT_MODEL=gpt-5.4}"
     },
     "embeddingModelDeploymentName": {
       "value": "${AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large}"

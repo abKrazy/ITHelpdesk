@@ -563,3 +563,149 @@ Authoritative sources:
 **By:** Tank, Switch, Trinity
 **What:** Phase 1 was verified live: Bicep compiles; triage performs deflection-first RAG with grounded citations; the incident MCP path returned real ServiceNow incident `INC0010036` through APIM -> ServiceNow; changes were committed as `3c7131b` and pushed to `abKrazy/ITHelpdesk`.
 **Why:** The team needed proof that the native Foundry Prompt Agent path, integrated-vectorizer search grounding, and connectionless APIM MCP incident flow work end-to-end before moving to Phase 2.
+
+### 2026-07-09T02-31-26: Hosted agents are invoked via their dedicated endpoint, not agent_reference; Foundry AI Search connection must be created control-plane in Bicep
+**By:** Coordinator
+**What:** Hosted agents are invoked via their dedicated endpoint, not agent_reference; Foundry AI Search connection must be created control-plane in Bicep
+**References:** src/helpdesk/ui/app.py, infra/modules/foundry.bicep, infra/main.bicep
+**Why:** Two Phase-2 architecture facts verified live (swedencentral):
+
+1. Hosted Agent invocation. A Foundry Hosted Agent (MAF container) CANNOT be called via client.responses.create(extra_body={agent_reference}) — that is the Prompt Agent contract and returns HTTP 400 "Hosted agents can only be called through the agent endpoint". Use AIProjectClient.get_openai_client(agent_name="it-helpdesk-orchestrator"), which points the OpenAI client at .../agents/{name}/endpoint/protocols/openai/, then call responses.create(model=..., input=conversation) with NO agent_reference. Fixed in src/helpdesk/ui/app.py.
+
+2. AI Search connection is control-plane only. azure-ai-projects 2.3.0 ConnectionsOperations exposes only get/get_default/list — NO create. The native triage Knowledge Base tool needs a project AI Search connection, so it must be created in Bicep (Microsoft.CognitiveServices/accounts/projects/connections, category CognitiveSearch, authType AAD, isSharedToAll true). Postprovision only reads it back via ensure_search_connection. Fixed in infra/modules/foundry.bicep + wired from main.bicep.
+
+Live end-to-end verified: deflect-first triage, incident creation (INC0010039 -> Desktop Support via APIM MCP), and follow-up ticket-status routing to the incident agent. Committed 8ed48b7, pushed to abKrazy/ITHelpdesk master.
+
+### Phase 2: Hosted Orchestrator deploy = CONTAINER path (not code-ZIP)
+**By:** Squad (Coordinator) for @abKrazy
+**What:** Deploy the MAF Foundry Hosted Orchestrator via the **container** path — `az acr build` (server-side, no local Docker) pushes the image to our provisioned ACR, then `AIProjectClient.agents.create_version(agent_name="it-helpdesk-orchestrator", definition=HostedAgentDefinition(container_configuration=ContainerConfiguration(image=...)))`.
+**Why:** In azure-ai-projects 2.3.0 the code-ZIP path is only exposed via the PRIVATE method `_create_version_from_code` (leading underscore, undocumented multipart contract) — fragile for an accelerator. The container path uses the PUBLIC, stable `create_version` API, aligns with Tank's ACR AcrPush/AcrPull RBAC already provisioned, and `az acr build` needs no Docker daemon on hackathon laptops (runs server-side, invoked from the postprovision shell hook to avoid the Windows az.cmd-from-python issue).
+**Verified SDK shape (2.3.0):** HostedAgentDefinition(kind="hosted", cpu:str, memory:str, environment_variables:dict, container_configuration=ContainerConfiguration(image:str), protocol_versions=[ProtocolVersionRecord(protocol="responses", version=<tbd-live>)]). Enums: AgentEndpointProtocol.RESPONSES="responses"; CodeDependencyResolution in {bundled, remote_build}.
+**Open live item:** exact responses protocol `version` string is a Foundry contract — discover on first live deploy and pin.
+
+### 2026-07-08: Phase 2 orchestrator = MAF Hosted Agent (agent-framework-foundry-hosting)
+
+**By:** Squad (Coordinator), for @abKrazy
+**What:** The custom Orchestrator is rebuilt as a Microsoft Agent Framework agent
+deployed as a **Foundry Hosted Agent** (container → ACR → Foundry Agent Service),
+per the canonical doc:
+https://learn.microsoft.com/en-us/agent-framework/hosting/foundry-hosted-agent?pivots=programming-language-python
+
+Verified package/API reality in the venv:
+- `agent-framework-foundry` 1.10.0 (GA), `agent-framework-orchestrations` 1.0.0 (GA) already installed.
+- `agent-framework-foundry-hosting` is **pre-release only** (`1.0.0a260630`); installed via `pip install --pre`. Hosted Agents are Preview.
+- Host pattern: `ResponsesHostServer(agent, store=...)` → exposes `/responses` on port 8088; `.run()`.
+- `Agent(client, instructions, *, name, tools=[...])`; `@tool(approval_mode="never_require")`.
+- `FoundryChatClient(project_endpoint=, model=, credential=DefaultAzureCredential())`.
+- Runtime auto-injects `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_AI_MODEL_DEPLOYMENT_NAME`, `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+
+**Why:** Spec requires the Orchestrator to be a custom MAF agent deployed as a Hosted
+Agent, invoking the Triage + Incident **Prompt Agents** (which stay native Foundry
+Prompt Agents). The orchestrator's tools call the sub-agents via the Responses API
+using `agent_reference`, holding conversation context so routing follow-ups
+(e.g. "what's the ticket priority?") go to the incident agent, not triage.
+
+### 2026-07-09T03-29-52: ServiceNow MCP tool is now a Foundry project connection (RemoteTool), not an inline-keyed MCPTool
+**By:** Coordinator
+**What:** ServiceNow MCP tool is now a Foundry project connection (RemoteTool), not an inline-keyed MCPTool
+**References:** infra/modules/mcp-connection.bicep, infra/main.bicep, src/helpdesk/agents/definitions/incident_agent.py
+**Why:** The Incident Prompt Agent's MCP tool used to carry the APIM subscription key inline in MCPTool headers — it never appeared in the Foundry portal Connections/Tools tab and the key sat in plaintext in the agent definition.
+
+Fix (committed 62f0d74, pushed to abKrazy/ITHelpdesk master):
+- New Bicep module infra/modules/mcp-connection.bicep creates a control-plane RemoteTool project connection (authType CustomKeys, category RemoteTool, target=APIM MCP url, key under Ocp-Apim-Subscription-Key). Runs after apim+foundry; key from apim.outputs.mcpSubscriptionKey. The azure-ai-projects data-plane SDK has no connection-create API, so connections MUST be control-plane.
+- main.bicep wires the module and emits AZURE_AI_MCP_CONNECTION_ID (full ARM id), AZURE_AI_MCP_CONNECTION_NAME, AZURE_AI_SEARCH_CONNECTION_NAME.
+- build_incident_definition takes mcp_connection_id (dropped apim_key); MCPTool uses project_connection_id, no headers.
+- postprovision.py passes mcp_connection_id from env; removed dead resolve_apim_key/_derive_apim_service_name.
+
+Verified live in swedencentral: connections.list() shows both search and servicenow-apim-mcp (RemoteTool); incident tool references project_connection_id with zero plaintext key; deflect-first triage + incident creation (INC0010041) work end-to-end. Triage AI Search was already a CognitiveSearch project connection — confirmed correct.
+
+### 2026-07-08: Phase 2 hosted-agent ACR and agent-identity RBAC
+**By:** Tank
+**What:** `infra/modules/acr.bicep` grants the Foundry project managed identity `AcrPull` (`7f951dda-4ed3-4680-a7ca-43fe172d538d`) at the Basic ACR scope for hosted-agent runtime image pulls, enables ACR `azureADAuthenticationAsArmPolicy`, and conditionally grants the deploying `principalId` `AcrPush` (`8311e382-0749-4cb8-b61a-304f252e45ec`) at the same scope for hosted-agent image pushes.
+
+**Why:** The hosted-agent permissions reference recommends Container Registry Repository Reader/Writer but also lists `AcrPull`/`AcrPush` as valid ACR-scope alternatives. Because this accelerator provisions Basic ACR, `AcrPull` keeps the existing Phase 1 path compatible while still satisfying runtime pulls by the Foundry project managed identity. `AZURE_PRINCIPAL_ID` is already an optional azd-bound parameter, so we can grant `AcrPush` without inventing a new deployer parameter; if it is empty, the deployer must already have push rights through subscription/resource-group Owner or another ACR-scoped assignment. The preferred hackathon path remains ACR remote build/hosted-agent packaging (azd/Foundry packages and pushes the image to ACR), so local Docker should not be required.
+
+**What:** No Bicep role assignment is created for the hosted orchestrator agent's auto-provisioned identity.
+
+**Why:** A Foundry hosted agent automatically gets its own agent blueprint and Entra identity when the agent is created, which happens after provisioning. The permissions reference says agents have implicit access to core capabilities within their own project, including model inferencing through the project endpoint and session storage, so no provision-time Bicep action is possible or needed for the standard same-project orchestrator-to-sub-agent pattern. If a deployment hits an advanced explicit-access requirement after the agent identity exists, assign Foundry User (`53ca6127-db72-4b80-b1b0-d745d6d5456d`) on the project scope:
+
+```powershell
+az role assignment create --assignee "<HOSTED_AGENT_PRINCIPAL_ID>" --role "53ca6127-db72-4b80-b1b0-d745d6d5456d" --scope "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.CognitiveServices/accounts/<FOUNDRY_ACCOUNT_NAME>/projects/<FOUNDRY_PROJECT_NAME>"
+```
+
+### 2026-07-08: Foundry IQ knowledge base = Search agentic-retrieval KB + MCP grounding (not a managed Index)
+
+**By:** Trinity
+
+**What:** The triage agent (`it-helpdesk-triage`) now grounds on a **Foundry IQ
+knowledge base**, which is an **Azure AI Search agentic-retrieval `knowledgeBase`**
+(plus a `searchIndex` `knowledgeSource` over the existing `it-helpdesk-kb` index),
+NOT a managed project `Index` (`AISearchIndexResource`) and NOT an inline
+`AzureAISearchTool`. Both prior approaches were wrong — neither produced a Foundry
+IQ knowledge base.
+
+The agent grounds via an **MCP tool**, the same RemoteTool project-connection
+pattern the incident agent uses for the ServiceNow APIM MCP server:
+
+- Data-plane (`SearchIndexClient`, preview `azure-search-documents`):
+  `create_or_update_knowledge_source(SearchIndexKnowledgeSource(...))` +
+  `create_or_update_knowledge_base(KnowledgeBase(...))`. Use **Minimal** reasoning
+  effort + **EXTRACTIVE_DATA** output mode so **no LLM** is required in the KB —
+  any higher reasoning effort/answer synthesis needs a `models` (Azure OpenAI)
+  entry or retrieval fails with "A Knowledge Base model must be specified".
+  KS = `it-helpdesk-kb-source`, KB = `it-helpdesk-kb`, semantic config `kb-semantic`.
+- Control-plane: a **RemoteTool** project connection (`it-helpdesk-kb-mcp`) with
+  `authType: ProjectManagedIdentity`, `audience: https://search.azure.com/`,
+  `category: RemoteTool`, `metadata: { ApiType: Azure }`, target
+  `{search}/knowledgebases/{kb}/mcp?api-version=2026-05-01-preview`. The project's
+  **system-assigned managed identity** needs **Search Index Data Reader** on the
+  search service (already granted by `search-rbac.bicep`).
+- Agent: `MCPTool(server_label="knowledge-base", server_url={kb mcp url},
+  require_approval="never", allowed_tools=["knowledge_base_retrieve"],
+  project_connection_id="it-helpdesk-kb-mcp")` inside `PromptAgentDefinition`.
+  Reference the connection by **NAME** (the portal links connections by name).
+  `knowledge_base_retrieve` is the only MCP tool a Search KB exposes today.
+
+Codified in `infra/modules/kb-connection.bicep` (+ wired in `infra/main.bicep`,
+output `AZURE_AI_KB_CONNECTION_NAME`), `src/helpdesk/agents/definitions/triage_agent.py`
+(`ensure_kb_knowledge_base`, `kb_mcp_url`, `build_triage_definition`),
+`src/helpdesk/agents/setup.py`, and `scripts/postprovision.py`.
+
+**Why:** The user reported the triage agent still connected to the Search index as
+a raw tool and that no Foundry IQ knowledge base existed. A managed project Index
+is not a Foundry IQ knowledge base. Live-verified in `swedencentral` (Basic tier,
+agentic-retrieval supported): a query "my laptop is running slow…" invoked
+`knowledge_base_retrieve` and returned KB steps **with citations** 【…†source】 plus
+the Desktop Support assignment group; the incident/APIM MCP handoff stayed intact.
+
+
+---
+
+### 2026-07-09: Hosted orchestrator must relay triage steps VERBATIM (user can't see tool output)
+
+**By:** Trinity
+
+**What:** Hardened `ORCHESTRATOR_INSTRUCTIONS` in `src/orchestrator/main.py` (the
+live Foundry Hosted Agent) with a top-priority RELAY VERBATIM rule: the user only
+ever sees the orchestrator's own reply, never the tool/sub-agent outputs, so the
+orchestrator MUST paste the `troubleshoot_from_knowledge_base` tool's full answer
+— every numbered step and any 【…†source】 citation — verbatim, and must NEVER say
+"I've shared/provided the steps" without including their text. The deflect-first,
+create-on-confirmation, and follow-up-to-incident rules are unchanged. Aligned the
+same "relay verbatim, user can't see tool output" guidance into
+`src/helpdesk/agents/prompts.py` `ORCHESTRATOR_INSTRUCTIONS` for consistency.
+Rebuilt the container via `az acr build` (unique tag) and published a NEW hosted
+orchestrator version (v2, latest/default) via
+`AIProjectClient.agents.create_version` on env `ithelpdesksc` (swedencentral).
+
+**Why:** The hosted orchestrator was non-deterministic — it sometimes summarized
+("I've provided some troubleshooting steps…") instead of pasting the triage steps,
+so the UI showed a confirmation offer with NO steps. Forcing verbatim relay makes
+the numbered steps appear every time. Live re-verification against the dedicated
+hosted-agent endpoint (exactly as the UI calls it): 8/8 trials
+("please file a ticket" ×6 + plain ×2) showed the restart / disk space / Task
+Manager steps with deflect-first preserved (no ticket created on the first turn);
+full happy path passed (steps → "go ahead" → INC0010042 created → status query
+routed to the incident tool). NOTE: reusing an image tag does NOT bump the hosted
+version — use a unique tag to force a fresh pull + new version.
+

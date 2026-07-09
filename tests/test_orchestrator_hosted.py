@@ -62,7 +62,15 @@ def test_tools_route_to_correct_prompt_agents(orchestrator_main, monkeypatch) ->
 
 def test_instructions_encode_routing_rules(orchestrator_main) -> None:
     instructions = orchestrator_main.ORCHESTRATOR_INSTRUCTIONS
-    # Deflect-first: KB before any ticket.
+    # Intent classification runs before deflect-first.
+    assert "CLASSIFY INTENT FIRST" in instructions
+    assert instructions.index("CLASSIFY INTENT FIRST") < instructions.index(
+        "DEFLECT FIRST"
+    ), "intent classification must come before DEFLECT FIRST"
+    # Status/lookup/update intents must skip triage / KB retrieval entirely.
+    assert "NEVER call\n         troubleshoot_from_knowledge_base for these" in instructions
+    assert "MUST skip triage entirely" in instructions
+    # Deflect-first: KB before any ticket (intent A only).
     assert "DEFLECT FIRST" in instructions
     assert "troubleshoot_from_knowledge_base FIRST" in instructions
     # Follow-up questions about an existing ticket go to the incident tool, NOT KB.

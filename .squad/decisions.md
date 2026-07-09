@@ -2,6 +2,45 @@
 
 ## Active Decisions
 
+# Decision — Pass triage Assignment Group to the Incident Agent on ticket create
+
+**Author:** Trinity (AI / Agent Engineer)
+**Date:** 2026-07-09
+**Env:** ithelpdesksc (swedencentral)
+**Status:** Shipped + proven live (orchestrator **v12**, incident **v6**)
+
+**Bug:** New incidents were created WITHOUT an Assignment Group even though Triage
+recommended one (e.g. "Desktop Support").
+
+**Root cause:** The Incident Prompt Agent is intentionally stateless — the
+`RelayOrchestrator` (`src/orchestrator/main.py`, `_run_stream`) invokes the chosen
+Prompt Agent with only `decision.sub_agent_input` via `agent_reference` (no shared
+sub-agent thread/conversation id). Triage's recommended group lived in visible text
+and in the `citations` side-channel (`assignmentGroup`), but the UI only stored
+rendered assistant text in history, so the side-channel metadata wasn't reliably
+replayed into the next router turn. If the router's self-contained Incident request
+omitted the group, the ticket was created without `assignment_group`.
+
+**Fix (additive threading + deterministic orchestrator guard):**
+1. UI (`index.html`) appends a non-rendered history metadata note with the first
+   citation `assignmentGroup`, so the next turn carries the triage recommendation.
+2. Orchestrator lifts replayed `citations` function-call metadata into
+   router-visible text when present.
+3. Orchestrator post-processes Incident CREATE requests: if a create lacks an
+   assignment group, it injects the latest `Recommended Assignment Group` from
+   history before calling the Incident Agent.
+4. `INCIDENT_INSTRUCTIONS` now require passing the exact group display name as
+   `assignment_group` in the MCP create body.
+
+Chosen over redesigning the hosted-orchestration thread model (smaller, preserves
+streaming/handoff chips/citations/routing). Files: `src/orchestrator/main.py`,
+`src/helpdesk/ui/templates/index.html`,
+`src/helpdesk/agents/definitions/incident_agent.py`,
+`src/helpdesk/agents/prompts.py`, +tests. Incident v5→**v6**, Orchestrator v11→**v12**
+(image tag `20260709155154`), UI redeployed. ruff clean, pytest 123→**126**.
+**Live:** INC0010062 created with `assignment_group = Desktop Support` (confirmed on
+create, status lookup, and after an urgency update). Commit `327d470`.
+
 # Decision — UI citation rendering for orchestrator v11
 
 **Author:** Switch (Backend / Integration Engineer)

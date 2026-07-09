@@ -60,6 +60,9 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   location: location
   tags: tags
   kind: 'linux'
+  // Basic (B1) is the minimum tier that supports Always On (warm-keep). Do not
+  // downgrade to Free/Shared (F1/D1) — those cannot hold the gunicorn worker warm,
+  // reintroducing a first-request cold start on the UI after idle.
   sku: {
     name: 'B1'
     tier: 'Basic'
@@ -88,6 +91,8 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
     keyVaultReferenceIdentity: managedIdentityResourceId
     siteConfig: {
       linuxFxVersion: 'PYTHON|3.11'
+      // Warm-keep: keeps the gunicorn/uvicorn worker resident so the first user
+      // request after idle does not pay a Python app cold start. Requires B1+ plan.
       alwaysOn: true
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'

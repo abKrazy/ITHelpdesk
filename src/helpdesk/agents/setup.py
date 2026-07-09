@@ -215,7 +215,7 @@ def create_foundry_agents(
     chat_deployment: str,
     search_endpoint: str,
     apim_mcp_url: str,
-    apim_key: str,
+    mcp_connection_id: str,
 ) -> dict[str, str]:
     """Create/refresh the triage + incident Prompt Agents and persist IDs.
 
@@ -268,7 +268,7 @@ def create_foundry_agents(
             "it-helpdesk-incident": build_incident_definition(
                 chat_deployment=chat_deployment,
                 apim_mcp_url=apim_mcp_url,
-                apim_key=apim_key,
+                mcp_connection_id=mcp_connection_id,
             ),
         }
 

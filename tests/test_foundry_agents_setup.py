@@ -105,13 +105,13 @@ def _install_fake_incident_definition(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType("helpdesk.agents.definitions.incident_agent")
     module.INCIDENT_INSTRUCTIONS = "incident instructions"
 
-    def build_incident_definition(*, chat_deployment, apim_mcp_url, apim_key):  # noqa: ARG001
+    def build_incident_definition(*, chat_deployment, apim_mcp_url, mcp_connection_id):  # noqa: ARG001
         from azure.ai.projects.models import PromptAgentDefinition
 
         return PromptAgentDefinition(
             model=chat_deployment,
             instructions=module.INCIDENT_INSTRUCTIONS,
-            tools=[SimpleNamespace(apim_mcp_url=apim_mcp_url, apim_key=apim_key)],
+            tools=[SimpleNamespace(apim_mcp_url=apim_mcp_url, mcp_connection_id=mcp_connection_id)],
         )
 
     module.build_incident_definition = build_incident_definition
@@ -132,7 +132,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
         chat_deployment="gpt-4o",
         search_endpoint="https://search.example.net",
         apim_mcp_url="https://apim.example.net/mcp",
-        apim_key="fake-key",
+        mcp_connection_id="/subscriptions/x/connections/servicenow-apim-mcp",
     )
 
     # One native-tool Prompt Agent per Phase 1 spec; no orchestrator Prompt Agent.
@@ -157,7 +157,9 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     )
     assert created["it-helpdesk-incident"].model == "gpt-4o"
     assert created["it-helpdesk-incident"].instructions == "incident instructions"
-    assert created["it-helpdesk-incident"].tools[0].apim_key == "fake-key"
+    assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == (
+        "/subscriptions/x/connections/servicenow-apim-mcp"
+    )
 
     # IDs persisted via azd env under the expected variable names.
     assert persisted[setup._AGENT_ID_ENV["it-helpdesk-triage"]] == "it-helpdesk-triage"

@@ -3,14 +3,16 @@
 Contract exported for Trinity's setup wiring:
     * ``INCIDENT_INSTRUCTIONS: str``
     * ``build_incident_definition(*, chat_deployment: str, apim_mcp_url: str,
-      apim_key: str) -> PromptAgentDefinition``
+      mcp_connection_id: str) -> PromptAgentDefinition``
 
 Decision: ``build_incident_definition`` requires ``apim_mcp_url`` explicitly so
 post-provisioning can pass the locked APIM output (`{gateway}/servicenow/mcp`)
-without relying on ambient environment state. MCP auth is attached directly to
-the ``MCPTool`` via inline APIM subscription-key headers; no Foundry connection
-is created. Azure SDK imports stay inside functions so this module imports
-cleanly in offline tests.
+without relying on ambient environment state. MCP auth is attached via a Foundry
+**project connection** (a ``RemoteTool`` connection created control-plane in
+Bicep) referenced by ``mcp_connection_id`` — the APIM subscription key lives in
+the connection secret store, never inline in the agent definition, and the tool
+surfaces in the Foundry portal Connections/Tools tab. Azure SDK imports stay
+inside functions so this module imports cleanly in offline tests.
 """
 
 from __future__ import annotations
@@ -24,8 +26,6 @@ __all__ = [
     "INCIDENT_INSTRUCTIONS",
     "build_incident_definition",
 ]
-
-_APIM_KEY_HEADER = "Ocp-Apim-Subscription-Key"
 
 INCIDENT_INSTRUCTIONS: str = """\
 You are the IT Helpdesk Incident agent. You create, check, and update ServiceNow
@@ -57,16 +57,21 @@ def build_incident_definition(
     *,
     chat_deployment: str,
     apim_mcp_url: str,
-    apim_key: str,
+    mcp_connection_id: str,
 ) -> PromptAgentDefinition:
-    """Build the native Foundry ``PromptAgentDefinition`` with an APIM MCP tool."""
+    """Build the native Foundry ``PromptAgentDefinition`` with an APIM MCP tool.
+
+    The MCP tool authenticates through the Foundry project connection identified
+    by ``mcp_connection_id`` (full ARM resource id of a ``RemoteTool``
+    connection). No subscription-key header is attached inline.
+    """
 
     if not chat_deployment:
         raise ValueError("chat_deployment is required.")
     if not apim_mcp_url:
         raise ValueError("apim_mcp_url is required.")
-    if not apim_key:
-        raise ValueError("apim_key is required.")
+    if not mcp_connection_id:
+        raise ValueError("mcp_connection_id is required.")
 
     from azure.ai.projects.models import MCPTool, PromptAgentDefinition
 
@@ -74,7 +79,7 @@ def build_incident_definition(
         server_label="servicenow-apim",
         server_url=apim_mcp_url,
         require_approval="never",
-        headers={_APIM_KEY_HEADER: apim_key},
+        project_connection_id=mcp_connection_id,
     )
     return PromptAgentDefinition(
         model=chat_deployment,

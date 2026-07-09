@@ -271,6 +271,22 @@ module appservice './modules/appservice.bicep' = {
   }
 }
 
+// 11) Foundry RemoteTool connection: the ServiceNow APIM MCP server, so the
+//     Incident Prompt Agent references it by connection id (no inline key) and
+//     it surfaces in the portal Connections/Tools tab. Runs after apim (needs
+//     the APIM subscription key) and foundry (needs the project).
+module mcpConnection './modules/mcp-connection.bicep' = {
+  name: 'mcp-connection'
+  scope: rg
+  params: {
+    aiFoundryName: foundry.outputs.aiFoundryName
+    aiProjectName: foundry.outputs.projectName
+    connectionName: 'servicenow-apim-mcp'
+    mcpEndpointUrl: apim.outputs.mcpEndpointUrl
+    apimSubscriptionKey: apim.outputs.mcpSubscriptionKey
+  }
+}
+
 // -----------------------------------------------------------------------------
 // OUTPUTS CONTRACT — consumed by azd env, the UI app settings, and the
 // postprovision hook (KB upload + agent creation). Do NOT remove or rename
@@ -302,6 +318,14 @@ output AZURE_AI_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
 output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
 output AZURE_OPENAI_CHAT_DEPLOYMENT string = chatModelDeploymentName
 output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = embeddingModelDeploymentName
+
+// -- Foundry project connections (native agent tools) --
+// The AI Search knowledge-source connection is emitted by the foundry module;
+// the ServiceNow MCP RemoteTool connection by the mcp-connection module. The
+// Incident agent references the MCP connection by this id (no inline APIM key).
+output AZURE_AI_SEARCH_CONNECTION_NAME string = foundry.outputs.searchConnectionName
+output AZURE_AI_MCP_CONNECTION_ID string = mcpConnection.outputs.connectionId
+output AZURE_AI_MCP_CONNECTION_NAME string = mcpConnection.outputs.connectionName
 
 // -- Storage (KB source docs) --
 output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.name

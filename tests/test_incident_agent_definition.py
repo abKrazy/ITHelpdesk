@@ -17,11 +17,11 @@ def _install_fake_projects_models(monkeypatch: pytest.MonkeyPatch) -> None:
     models = sys.modules["azure.ai.projects.models"]
 
     class MCPTool:
-        def __init__(self, *, server_label, server_url, require_approval, headers):
+        def __init__(self, *, server_label, server_url, require_approval, project_connection_id):
             self.server_label = server_label
             self.server_url = server_url
             self.require_approval = require_approval
-            self.headers = headers
+            self.project_connection_id = project_connection_id
 
     class PromptAgentDefinition:
         def __init__(self, *, model, instructions, tools):
@@ -39,7 +39,7 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     definition = incident_agent.build_incident_definition(
         chat_deployment="gpt-4o",
         apim_mcp_url="https://apim.azure-api.net/servicenow/mcp",
-        apim_key="fake-apim-key",
+        mcp_connection_id="/subscriptions/x/connections/servicenow-apim-mcp",
     )
 
     assert definition.model == "gpt-4o"
@@ -49,4 +49,4 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     assert tool.server_label == "servicenow-apim"
     assert tool.server_url == "https://apim.azure-api.net/servicenow/mcp"
     assert tool.require_approval == "never"
-    assert tool.headers == {"Ocp-Apim-Subscription-Key": "fake-apim-key"}
+    assert tool.project_connection_id == "/subscriptions/x/connections/servicenow-apim-mcp"

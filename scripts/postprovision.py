@@ -167,6 +167,13 @@ def create_hosted_orchestrator() -> None:
             "AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", required=False, default=None
         )
         or None,
+        # Orchestrator's own reasoning effort (default low). Forwarded so `azd up`
+        # reproduces the latency tuning idempotently; retune via `azd env set
+        # ORCHESTRATOR_REASONING_EFFORT=...` without a code change.
+        reasoning_effort=env(
+            "ORCHESTRATOR_REASONING_EFFORT", required=False, default="low"
+        )
+        or "low",
         image=image,
     )
 

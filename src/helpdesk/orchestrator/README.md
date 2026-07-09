@@ -16,6 +16,14 @@ end users talk to (via the UI). It does NOT resolve tickets itself; it **routes*
 ## Inputs it needs (from azd outputs → app settings / env)
 - `AZURE_AI_PROJECT_ENDPOINT` — Foundry project to run under.
 - `AZURE_OPENAI_CHAT_DEPLOYMENT` — chat model for reasoning/routing.
+- `ORCHESTRATOR_REASONING_EFFORT` — gpt-5.x reasoning effort for the
+  orchestrator's own two per-turn passes (decide-tool + relay). Defaults to
+  `low` (the #1 latency lever — the reasoning "thinking" time is ~73–81% of each
+  turn). Injected as a non-reserved container env var so it is retunable via
+  `azd env set ORCHESTRATOR_REASONING_EFFORT=<none|minimal|low|medium|high>`
+  (then re-register) without a container rebuild. Empty/`default` omits the
+  override (model default effort). Never set temperature/max_tokens — reasoning
+  models reject them.
 - `AZURE_CLIENT_ID` — managed identity for auth (DefaultAzureCredential).
 - The triage + incident agent IDs (set by the postprovision hook).
 

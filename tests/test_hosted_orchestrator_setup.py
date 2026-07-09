@@ -136,8 +136,48 @@ def test_create_hosted_orchestrator_registers_container_agent(
     # Non-reserved telemetry knobs ARE set so the container tags/records its traces.
     assert env["OTEL_SERVICE_NAME"] == "it-helpdesk-orchestrator"
     assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"
+    # Orchestrator reasoning effort defaults to low (the #1 latency lever) and is a
+    # non-reserved, env-retunable key.
+    assert env["ORCHESTRATOR_REASONING_EFFORT"] == "low"
 
     assert persisted["AZURE_AI_ORCHESTRATOR_AGENT_ID"] == "it-helpdesk-orchestrator"
+
+
+def test_create_hosted_orchestrator_injects_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The orchestrator's reasoning effort is injected as a non-reserved env var so
+    it can be retuned (e.g. minimal/medium) without rebuilding the image. Defaults
+    to low; an explicit value overrides it."""
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+
+    # Default -> low.
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-5.4",
+        image="acr/it-helpdesk-orchestrator:latest",
+    )
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0][
+        "definition"
+    ].environment_variables
+    assert env["ORCHESTRATOR_REASONING_EFFORT"] == "low"
+
+    # Explicit override is honoured.
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-5.4",
+        image="acr/it-helpdesk-orchestrator:latest",
+        reasoning_effort="minimal",
+    )
+    env2 = _FakeProjectClient.instances[-1].agents.create_calls[0][
+        "definition"
+    ].environment_variables
+    assert env2["ORCHESTRATOR_REASONING_EFFORT"] == "minimal"
+    # Not a reserved platform key.
+    assert not any(k.startswith(("FOUNDRY_", "AGENT_")) for k in env2)
 
 
 def test_create_hosted_orchestrator_injects_dedicated_triage_model(

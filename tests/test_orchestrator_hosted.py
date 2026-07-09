@@ -100,6 +100,44 @@ def test_call_prompt_agent_uses_each_agents_own_model(orchestrator_main, monkeyp
     )
 
 
+def test_default_options_pin_low_reasoning_effort(orchestrator_main, monkeypatch) -> None:
+    """The orchestrator's own gpt-5.x passes must run at the configured reasoning
+    effort (default ``low``) — the #1 latency lever — while keeping store=False.
+    reasoning models reject temperature/max_tokens, so those must NOT be present.
+    """
+    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "low")
+    opts = orchestrator_main._build_default_options()
+    assert opts["store"] is False
+    assert opts["reasoning"] == {"effort": "low"}
+    assert "temperature" not in opts
+    assert "max_tokens" not in opts
+
+
+def test_default_options_honour_custom_effort(orchestrator_main, monkeypatch) -> None:
+    """ORCHESTRATOR_REASONING_EFFORT is configurable (e.g. back off to minimal or
+    up to medium) without a rebuild — _build_default_options reflects it."""
+    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "minimal")
+    assert orchestrator_main._build_default_options()["reasoning"] == {"effort": "minimal"}
+
+    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "MEDIUM")
+    assert orchestrator_main._build_default_options()["reasoning"] == {"effort": "medium"}
+
+
+def test_default_options_omit_reasoning_when_unset(orchestrator_main, monkeypatch) -> None:
+    """An empty / ``default`` effort omits the override so the model uses its own
+    default effort — the option must not carry a stray/empty reasoning block."""
+    for sentinel in ("", "default", "DEFAULT"):
+        monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", sentinel)
+        opts = orchestrator_main._build_default_options()
+        assert opts == {"store": False}
+        assert "reasoning" not in opts
+
+
+def test_reasoning_effort_defaults_to_low(orchestrator_main) -> None:
+    """With no ORCHESTRATOR_REASONING_EFFORT env set, the module defaults to low."""
+    assert orchestrator_main.REASONING_EFFORT == "low"
+
+
 def test_instructions_encode_routing_rules(orchestrator_main) -> None:
     instructions = orchestrator_main.ORCHESTRATOR_INSTRUCTIONS
     # Intent classification runs before deflect-first.

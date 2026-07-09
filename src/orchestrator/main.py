@@ -58,6 +58,17 @@ TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")
 PORT = int(os.environ.get("PORT", "8088"))
 
+# Reasoning effort for the orchestrator's OWN gpt-5.x reasoning-model passes (the
+# per-turn "decide which tool" pass + the "relay verbatim" pass). These two hidden
+# reasoning passes dominate turn latency (~12–17s/turn, 73–81% of each turn), so we
+# run them at LOW effort — enough to keep routing correct while cutting the hidden
+# "thinking" time. Threaded via ORCHESTRATOR_REASONING_EFFORT so ops can retune it
+# (e.g. to ``minimal``/``none`` or back up to ``medium``) WITHOUT a container rebuild.
+# gpt-5.x reasoning models take reasoning.effort on the Responses API; they reject
+# temperature/max_tokens, so we never pass those. Set to "" / "default" to omit the
+# override entirely and fall back to the model's default effort.
+REASONING_EFFORT = os.environ.get("ORCHESTRATOR_REASONING_EFFORT", "low").strip()
+
 # Cloud role name for App Insights (== OTEL service.name). Honors the injected
 # OTEL_SERVICE_NAME env var; defaults to the orchestrator's own name.
 SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "it-helpdesk-orchestrator")
@@ -402,6 +413,24 @@ TOOLS = [
 ]
 
 
+def _build_default_options() -> dict:
+    """Assemble the orchestrator agent's default per-run chat options.
+
+    ``store=False`` avoids duplicating conversation history the hosting
+    infrastructure already persists (per Foundry hosted-agent guidance). When
+    ``REASONING_EFFORT`` is a concrete level, we also pin the gpt-5.x
+    ``reasoning.effort`` for EVERY orchestrator model pass (decide-tool + relay)
+    so the reasoning model spends less hidden "thinking" time — the #1 latency
+    lever. An empty/``default`` value omits the override (model default effort).
+    We never set temperature/max_tokens: reasoning models reject them.
+    """
+    options: dict = {"store": False}
+    effort = REASONING_EFFORT.lower()
+    if effort and effort != "default":
+        options["reasoning"] = {"effort": effort}
+    return options
+
+
 def build_agent() -> Agent:
     """Construct the MAF orchestrator agent (LLM brain + two sub-agent tools)."""
     from azure.identity import DefaultAzureCredential
@@ -419,7 +448,9 @@ def build_agent() -> Agent:
         tools=TOOLS,
         # The hosting infrastructure persists conversation history; store=False
         # avoids duplicating it (per the Foundry hosted-agent Responses guidance).
-        default_options={"store": False},
+        # reasoning.effort (when set) lowers the orchestrator's per-pass thinking
+        # time — the dominant per-turn latency contributor.
+        default_options=_build_default_options(),
     )
 
 
@@ -433,12 +464,13 @@ def main() -> None:
     configure_telemetry()
     _LOGGER.info(
         "Starting IT Helpdesk Orchestrator hosted agent on port %s "
-        "(project=%s, model=%s, triage=%s, incident=%s)",
+        "(project=%s, model=%s, triage=%s, incident=%s, reasoning_effort=%s)",
         PORT,
         PROJECT_ENDPOINT or "<unset>",
         MODEL,
         TRIAGE_AGENT_NAME,
         INCIDENT_AGENT_NAME,
+        REASONING_EFFORT or "<model default>",
     )
     ResponsesHostServer(build_agent()).run(port=PORT)
 

@@ -341,6 +341,7 @@ def create_hosted_orchestrator(
     chat_deployment: str,
     image: str,
     triage_chat_deployment: str | None = None,
+    reasoning_effort: str | None = None,
     cpu: str = "1",
     memory: str = "2Gi",
     responses_version: str | None = None,
@@ -366,6 +367,11 @@ def create_hosted_orchestrator(
     content-recording toggle) that ``main.py``'s telemetry setup reads.
     ``main.py`` resolves the App Insights connection string from the injected env
     var (or the project's AppInsights connection as a runtime fallback).
+
+    ``reasoning_effort`` (default ``low``) pins the orchestrator's gpt-5.x
+    ``reasoning.effort`` for both its per-turn passes — the #1 latency lever. It
+    is injected as ``ORCHESTRATOR_REASONING_EFFORT`` so it can be retuned via env
+    (``azd env set`` + re-register) without rebuilding the container image.
     """
     from azure.ai.projects import AIProjectClient
     from azure.ai.projects.models import (
@@ -399,6 +405,10 @@ def create_hosted_orchestrator(
         "TRIAGE_MODEL_DEPLOYMENT_NAME": triage_chat_deployment or chat_deployment,
         "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
         "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
+        # Orchestrator's own gpt-5.x reasoning effort (both per-turn passes). LOW
+        # by default to cut the dominant per-turn "thinking" latency while keeping
+        # routing correct. Non-reserved key -> retunable via env without a rebuild.
+        "ORCHESTRATOR_REASONING_EFFORT": reasoning_effort or "low",
         "OTEL_SERVICE_NAME": _ORCHESTRATOR_NAME,
         "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED": "true",
     }

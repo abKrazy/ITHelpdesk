@@ -50,3 +50,10 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     assert tool.server_url == "https://apim.azure-api.net/servicenow/mcp"
     assert tool.require_approval == "never"
     assert tool.project_connection_id == "servicenow-apim-mcp"
+
+
+def test_incident_instructions_preserve_triage_assignment_group() -> None:
+    instructions = incident_agent.INCIDENT_INSTRUCTIONS
+    assert "assignment_group" in instructions
+    assert "Recommended Assignment Group" in instructions
+    assert "Do not omit it" in instructions

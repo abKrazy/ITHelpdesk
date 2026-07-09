@@ -156,6 +156,31 @@ def test_messages_to_input_accepts_plain_string(orchestrator_main) -> None:
     ]
 
 
+def test_messages_to_input_lifts_assignment_group_from_citations_side_channel(
+    orchestrator_main,
+) -> None:
+    msg = SimpleNamespace(
+        role="assistant",
+        text="Try these steps.",
+        contents=[
+            SimpleNamespace(
+                type="function_call",
+                name="citations",
+                arguments=json.dumps(
+                    {"citations": [{"assignmentGroup": "Desktop Support"}]}
+                ),
+            )
+        ],
+    )
+
+    assert orchestrator_main._messages_to_input([msg]) == [
+        {
+            "role": "assistant",
+            "content": "Try these steps.\n\nRecommended Assignment Group: Desktop Support",
+        }
+    ]
+
+
 def test_tool_args_to_message_reads_schema_field(orchestrator_main) -> None:
     assert (
         orchestrator_main._tool_args_to_message(
@@ -252,6 +277,38 @@ def test_route_intent_create_confirm_is_self_contained(orchestrator_main, monkey
     assert decision.agent_name == "it-helpdesk-incident"
     assert "my laptop is running slow" in decision.sub_agent_input
     assert "Desktop Support" in decision.sub_agent_input
+
+
+def test_route_intent_enriches_create_request_from_history_assignment_group(
+    orchestrator_main, monkeypatch
+) -> None:
+    """If the routing model omits assignment_group on create, the orchestrator
+    injects the latest triage recommendation before invoking the Incident agent."""
+    resp = SimpleNamespace(
+        output=[
+            _fc_item(
+                "manage_servicenow_incident",
+                '{"request":"create an incident for: my laptop is running slow"}',
+            )
+        ],
+        output_text=None,
+    )
+    _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent(
+        [
+            {"role": "user", "content": "my laptop is running slow"},
+            {
+                "role": "assistant",
+                "content": "Try these steps.\n\nRecommended Assignment Group: Desktop Support",
+            },
+            {"role": "user", "content": "create the ticket"},
+        ]
+    )
+
+    assert decision.agent_name == "it-helpdesk-incident"
+    assert decision.sub_agent_input.endswith("assignment_group: Desktop Support")
+    assert json.loads(decision.arguments_json)["request"] == decision.sub_agent_input
 
 
 def test_route_intent_direct_reply_when_no_tool(orchestrator_main, monkeypatch) -> None:

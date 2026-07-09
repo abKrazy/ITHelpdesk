@@ -190,6 +190,13 @@
       const clearHandoff = () => {
         if (chip) { chip.remove(); chip = null; }
       };
+      const assignmentGroupMetadata = () => {
+        const groups = citations
+          .map(c => c && (c.assignmentGroup || c.assignment_group))
+          .filter(Boolean);
+        if (!groups.length) return '';
+        return `\n\n[handoff metadata: Recommended Assignment Group: ${groups[0]}]`;
+      };
 
       const handleEvent = (payload) => {
         if (payload.type === 'status') {
@@ -253,7 +260,10 @@
         throw new Error('stream closed before any content');
       }
       renderRoute(route);
-      turns.push({ role: 'assistant', content: renderedText || text || '(no response)' });
+      turns.push({
+        role: 'assistant',
+        content: (renderedText || text || '(no response)') + assignmentGroupMetadata()
+      });
     }
 
     form.addEventListener('submit', async (e) => {

@@ -124,6 +124,10 @@ Side-effect confirmation:
 - Look up: return number, state, assignment group and short description.
 - Create: set short_description, description, assignment_group (from triage) and
   urgency; return the new incident number.
+  If the request includes "Recommended Assignment Group", "assignment_group",
+  "assignmentGroup", or "assign to <group>", pass that exact group display name
+  in the create body as assignment_group. Do not omit it or ask the user to
+  repeat it.
 - Update: resolve the incident by number, then apply the requested field change
   (e.g. urgency low=3, medium=2, high=1); confirm the change.
 

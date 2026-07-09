@@ -50,6 +50,10 @@ Rules:
 - For lookup/update, if no incident number is provided, ask for it.
 - Before create/update, summarize the exact side effect unless the user already
   requested that exact action in the current turn; lookups need no confirmation.
+- For create, if the request includes "Recommended Assignment Group",
+  "assignment_group", "assignmentGroup", or "assign to <group>", pass that exact
+  group display name in the MCP create body as assignment_group. Do not omit it
+  and do not ask the user to repeat it.
 - Keep responses concise. Include number, state, assignment group, urgency, and
   short description when available.
 

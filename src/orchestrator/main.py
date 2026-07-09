@@ -498,6 +498,9 @@ def _messages_to_input(messages: Any) -> list[dict[str, str]]:
     answers) plus the new user message as ``agent_framework.Message`` objects. We
     flatten each to ``{"role", "content"}`` so the routing model classifies intent
     with full context (e.g. the INC number and assignment group from earlier turns).
+    Some clients may also replay our terminal ``citations`` function-call side
+    channel; when present, lift its ``assignmentGroup`` metadata into assistant text
+    so the router can use it on the later "create the ticket" confirmation turn.
     """
     if messages is None:
         return []
@@ -511,16 +514,33 @@ def _messages_to_input(messages: Any) -> list[dict[str, str]]:
         text = getattr(msg, "text", None)
         if isinstance(msg, str):
             text = msg
-        if not text:
-            continue
         raw_role = getattr(msg, "role", "user")
         role = str(getattr(raw_role, "value", raw_role) or "user").lower()
         if role in ("agent",):
             role = "assistant"
         if role not in _INPUT_ROLES:
             role = "user"
-        items.append({"role": role, "content": text})
+        parts = [str(text)] if text else []
+        parts.extend(_metadata_text_from_message_contents(msg))
+        content = "\n\n".join(part for part in parts if part.strip())
+        if content:
+            items.append({"role": role, "content": content})
     return items
+
+
+def _metadata_text_from_message_contents(msg: Any) -> list[str]:
+    """Extract router-useful metadata from non-text message contents, if replayed."""
+    out: list[str] = []
+    for content in getattr(msg, "contents", None) or getattr(msg, "content", None) or []:
+        if getattr(content, "type", None) != "function_call":
+            continue
+        if getattr(content, "name", None) != CITATIONS_TOOL_NAME:
+            continue
+        args = getattr(content, "arguments", "") or ""
+        assignment_group = _assignment_group_from_citations_payload(args)
+        if assignment_group:
+            out.append(f"Recommended Assignment Group: {assignment_group}")
+    return out
 
 
 class RouteDecision:
@@ -561,6 +581,73 @@ def _tool_args_to_message(tool_name: str, arguments_json: str | None) -> str:
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip()
     return (arguments_json or "").strip()
+
+
+_ASSIGNMENT_GROUP_RE = re.compile(
+    r"(?:recommended\s+)?assignment\s+group\s*[:=]\s*([^\n.;\]]+)",
+    re.IGNORECASE,
+)
+_CREATE_RE = re.compile(r"\b(create|open|file|log|raise)\b.*\b(ticket|incident)\b", re.I)
+
+
+def _assignment_group_from_citations_payload(arguments_json: str | None) -> str:
+    """Return the first non-empty assignmentGroup from a citations side-channel."""
+    if not arguments_json:
+        return ""
+    try:
+        payload = json.loads(arguments_json)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    citations = payload.get("citations") if isinstance(payload, dict) else None
+    if not isinstance(citations, list):
+        return ""
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        group = citation.get("assignmentGroup") or citation.get("assignment_group")
+        if isinstance(group, str) and group.strip():
+            return group.strip()
+    return ""
+
+
+def _assignment_group_from_history(input_items: list[dict[str, str]]) -> str:
+    """Find the latest triage-recommended assignment group in flattened history."""
+    for item in reversed(input_items):
+        content = item.get("content") or ""
+        for match in reversed(list(_ASSIGNMENT_GROUP_RE.finditer(content))):
+            group = match.group(1).strip(" .;]")
+            if group:
+                return group
+        group = _assignment_group_from_citations_payload(content)
+        if group:
+            return group
+    return ""
+
+
+def _request_has_assignment_group(request: str) -> bool:
+    return bool(_ASSIGNMENT_GROUP_RE.search(request) or re.search(r"\bassign(?:ed)?\s+to\b", request, re.I))
+
+
+def _enrich_create_request_with_assignment_group(
+    tool_name: str,
+    request: str,
+    input_items: list[dict[str, str]],
+) -> str:
+    """Deterministically carry triage's assignment group into incident creation.
+
+    The router model is instructed to make the Incident-agent input self-contained,
+    but the assignment group often lives in our citations side-channel rather than
+    visible assistant text. This post-processing guard keeps the handoff reliable
+    without changing routing, streaming, or the Incident agent's public contract.
+    """
+    if tool_name != "manage_servicenow_incident":
+        return request
+    if not _CREATE_RE.search(request) or _request_has_assignment_group(request):
+        return request
+    assignment_group = _assignment_group_from_history(input_items)
+    if not assignment_group:
+        return request
+    return f"{request}; assignment_group: {assignment_group}"
 
 
 def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
@@ -604,12 +691,19 @@ def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
         if agent_name is None:
             continue  # ignore unknown tool names, keep scanning
         arguments = getattr(item, "arguments", None)
+        sub_agent_input = _tool_args_to_message(name, arguments)
+        sub_agent_input = _enrich_create_request_with_assignment_group(
+            name, sub_agent_input, input_items
+        )
+        arguments_out = arguments if isinstance(arguments, str) else json.dumps(arguments or {})
+        if name == "manage_servicenow_incident":
+            arguments_out = json.dumps({"request": sub_agent_input})
         return RouteDecision(
             tool_name=name,
             agent_name=agent_name,
-            sub_agent_input=_tool_args_to_message(name, arguments),
+            sub_agent_input=sub_agent_input,
             call_id=getattr(item, "call_id", None) or f"call_{uuid.uuid4().hex[:24]}",
-            arguments_json=arguments if isinstance(arguments, str) else json.dumps(arguments or {}),
+            arguments_json=arguments_out,
         )
 
     # No (known) tool call -> the model answered directly (clarifying question).

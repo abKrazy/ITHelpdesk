@@ -2,6 +2,170 @@
 
 ## Active Decisions
 
+### 2026-07-09: Warm-keep for first-turn cold start (latency lever #4) — App Service fixed in-infra; Foundry hosted-agent runtime exposes NO warm knob (keep-alive offered as an option)
+**By:** Tank (Infra / Platform Engineer)
+**Status:** App Service warm-keep APPLIED + reproducible in bicep. Foundry hosted-orchestrator warm-keep NOT possible via infra — reported as an option for abKrazy.
+
+**What cold-starts (App Insights evidence, appi-ztk6zx5aedqtc, 2026-07-09):**
+Two independent cold-start surfaces:
+1. **Foundry hosted-agent runtime** (`agentsv2` ingress role) — the container hosting the MAF
+   orchestrator. Idle→eviction→cold-start pattern from the ingress `invoke_agent` spans:
+   - 5.2 min idle → 19.3s (warm) · 11.2 min idle → 17.7s (warm) · **34.4 min idle → 66.4s (COLD)**,
+     then 16–24s once warm. The `troubleshoot_from_knowledge_base`/triage sub-path on that cold turn
+     took **51s vs 3–4s** steady. So the container is evicted after ~15–30 min idle and the first
+     request after eviction pays **~47s** of cold-start overhead (66s vs ~19s steady). This is the
+     DOMINANT cold start and corroborates Trinity's ~6s figure (hers was the conservative time-to
+     `response.created` stream head; the full container + sub-agent cold path is far worse).
+2. **App Service UI** (`app-ztk6zx5aedqtc`) — a *separate* cold start a real user hits before the
+   orchestrator: the plan had **drifted to F1 (Free) with alwaysOn=false**, so the gunicorn/uvicorn
+   worker idles out and the first web request pays a Python app cold start.
+
+**What I applied (App Service UI — my lane, VERSION-INDEPENDENT):**
+- Reconciled the drifted plan **F1 → B1 (Basic)** — the minimum tier that supports Always On, and
+  already the committed design in `infra/modules/appservice.bicep` (F1 was out-of-band drift).
+- Enabled **alwaysOn=true** on the web app.
+- Live proof: BEFORE = `{sku:F1, tier:Free, alwaysOn:false}`; AFTER = `{sku:B1, tier:Basic,
+  alwaysOn:true}`, site `state:Running`, `https://app-ztk6zx5aedqtc.azurewebsites.net` → HTTP 200.
+- Idempotent in bicep: `appservice.bicep` already declares `sku {name:'B1', tier:'Basic'}` +
+  `siteConfig.alwaysOn:true`; added comments so nobody silently re-downgrades to F1. `azd up`
+  reproduces the warm config. `az bicep build --file infra/main.bicep` succeeds.
+- **Incremental cost: ~$13/month** (B1 Linux) vs $0 on F1. Warm-keeps exactly one instance — no
+  over-provisioning. Flag if F1 was an intentional cost choice.
+
+**Hosted orchestrator — the platform exposes NO warm-keep knob (do not hack):**
+- The orchestrator is a Foundry **Hosted Agent** (`HostedAgentDefinition`, registered data-plane via
+  `AIProjectClient.agents.create_version`). It is **not** an ARM resource — there is NO Container App,
+  managed online endpoint, or AKS in the RG, so there is nothing in bicep to set min-replicas on.
+- Confirmed against azure-ai-projects **2.3.0**: `HostedAgentDefinition` fields are only
+  `cpu, memory, environment_variables, container_configuration, protocol_versions, code_configuration,
+  telemetry_config` — **no** min-instance / min-replica / scale-to-zero / always-warm field, at the
+  account, project, or agent-version level (checked the live v7 definition too). The runtime is fully
+  managed; idle eviction is platform-controlled and not customer-configurable.
+- Because there is no host-level knob, warm-keep is **version-independent by construction** — nothing
+  I set is disturbed by Trinity's v7 bump (v1–v7 all present; v7 already live).
+
+**Keep-alive = OPTION for abKrazy (NOT implemented — cost/noise):**
+The only way to keep the managed container warm is to invoke the agent more often than the idle
+window (~every 10 min). A cheap health ping likely does NOT reset Foundry's idle timer (eviction is
+based on agent invocations, not HTTP liveness), so a keep-alive must issue a real Responses
+invocation. Each ping = one full orchestrator turn (the gpt-5.4 double round-trip, ~1500 input
+tokens ×2, ~12–17s). At every 10 min ≈ 144 pings/day ≈ ~4M+ input tokens/month, PLUS it pollutes the
+App Insights latency traces (corrupting the percentiles Trinity is actively measuring) and burns model
+quota 24/7. Mechanism if approved: a small infra job (Logic App recurrence / Function timer /
+Container App cron) that calls the orchestrator every ~10 min — idempotent in bicep. I did **not**
+implement it: it is neither cheap nor clean, and it would interfere with Trinity's concurrent eval.
+**Recommendation:** ship the App Service warm-keep now; defer the hosted-agent keep-alive to an
+explicit abKrazy decision. Note Trinity's reasoning-effort reduction (v7) will also shrink the cold
+turn (less work on the cold path), partially mitigating without a keep-alive. If a hard warm-keep is
+required, the clean path is a Microsoft/Foundry ask for a hosted-agent min-replica / reserved-capacity
+knob rather than a token-burning ping.
+
+### 2026-07-09: Bump App Service plan F1→B1→B2 (Basic) for Always On headroom
+**By:** Tank
+**What:** Scaled App Service plan `plan-ztk6zx5aedqtc` (RG `rg-ithelpdesksc`) from B1 to
+**B2** (Basic tier) live via `az appservice plan update --sku B2`, and set the same SKU
+in `infra/modules/appservice.bicep` (name `B2`, tier `Basic`) so `azd up` reproduces B2,
+not B1. `siteConfig.alwaysOn: true` is retained. This continues the prior F1→B1
+reconciliation (decision 21f9009).
+**Why:** abKrazy requested Basic B2 for Always On warm-keep with more CPU/RAM headroom for
+the UI's gunicorn/uvicorn worker. B1 already supported Always On; B2 adds capacity without
+over-provisioning (single instance, capacity 1). Bicep is the source of truth, so the SKU
+is set there to prevent drift back to B1/F1 on the next `azd up`.
+**Verification:** `az bicep build --file infra/main.bicep` succeeds (exit 0, only
+pre-existing unrelated warnings). Live plan SKU confirmed B2; `alwaysOn` confirmed `true`;
+`https://app-ztk6zx5aedqtc.azurewebsites.net/healthz` returns 200.
+**Cost:** B2 Linux ≈ ~$26/month (vs ~$13 B1, $0 F1). One instance, no over-provisioning.
+
+### 2026-07-09: Orchestrator reasoning effort lowered to `low` (wired + configurable) — but LIVE measurement proves it does NOT reduce latency; real lever is the double gpt-5.4 pass overhead, not reasoning
+**By:** Trinity (AI / Agent Engineer)
+**What:** Implemented the user-approved latency lever #1 — set the hosted
+orchestrator's gpt-5.x `reasoning.effort` to `low` for BOTH per-turn model passes
+(decide-tool + relay). Threaded via a new `ORCHESTRATOR_REASONING_EFFORT` env var
+(default `low`) so it is retunable without a rebuild. Rebuilt + republished the
+hosted orchestrator and re-ran the full live regression + latency measurement.
+
+**How it's wired (configurable, no secrets):**
+- `src/orchestrator/main.py`: new `REASONING_EFFORT` (from
+  `ORCHESTRATOR_REASONING_EFFORT`, default `low`). New `_build_default_options()`
+  helper adds `reasoning={"effort": <level>}` to the MAF agent's `default_options`
+  (alongside `store=False`). Empty/`default` omits the override (model default).
+  Never passes temperature/max_tokens (reasoning models reject them). Startup log
+  now surfaces the effort.
+- `src/helpdesk/agents/setup.py`: `create_hosted_orchestrator(...)` takes a new
+  `reasoning_effort` kwarg (default `low`) and injects `ORCHESTRATOR_REASONING_EFFORT`
+  into the hosted container env (non-reserved key — retunable via `azd env set` +
+  re-register, no image rebuild).
+- `scripts/postprovision.py`: forwards `ORCHESTRATOR_REASONING_EFFORT` (default
+  `low`) so `azd up` reproduces it idempotently.
+- Tests: `test_orchestrator_hosted.py` (+4) proves `_build_default_options`
+  pins/omits effort correctly and defaults to `low`; `test_hosted_orchestrator_setup.py`
+  (+1) proves the env var is injected (default + override) and is non-reserved.
+  `ruff check .` clean; full `pytest` green (103 passed).
+
+**Hosted redeploy (unique tag → create_version):**
+- `az acr build` → `acrztk6zx5aedqtc.azurecr.io/it-helpdesk-orchestrator:reasoning-low-20260709112644`.
+- Registered via `AIProjectClient.agents.create_version`. Shipped serving version
+  = **orchestrator v9** (`@latest`, active, `ORCHESTRATOR_REASONING_EFFORT=low`).
+  v7 = initial low build; **v8 = same-image `high`-effort A/B** (to prove the knob
+  reaches the live model); v9 = final low ship. Triage (v5, gpt-5.4-mini) +
+  incident (v5, gpt-5.4) unchanged.
+
+**GATE 1 — quality holds (5-case regression LIVE on v9, all PASS):**
+- (a) deflect-first KB: verbatim numbered steps 1–5 + "Desktop Support", no
+  premature ticket. ✓
+- (b) create-on-confirm: turn 1 deflected (no ticket); ticket created only after
+  "that didn't help, please file a ticket" → INC0010057. ✓
+- (c) status/lookup skips triage: `Calling Orchestrator → Calling Incident Agent`
+  only, no KB. ✓
+- (d) cold sys_id-resolving update: fresh convo, "update INC0010057 urgency to
+  high" resolved number→sys_id and patched urgency → 1 - High. ✓
+- (e) streaming: token frames + handoff `status` chips ("Calling Orchestrator",
+  "Calling Triage/Incident Agent") on every turn. ✓
+
+**GATE 2 — latency: NO improvement (honest negative result, live-proven).**
+Per-stage KQL (App Insights `appi-ztk6zx5aedqtc`, orchestrator `chat gpt-5.4` spans):
+| Config | pass duration (median) | reasoning tokens |
+|--------|-----------------------:|-----------------:|
+| v6 baseline (model default effort) | ~6.5s | **0** |
+| v9 `low` | ~6.5s | 0–11 |
+| v8 `high` (A/B) | ~6.5–7.6s | 0–51 |
+
+Wall-clock (warm, same methodology): TTFT ~17–22s / total ~23–28s — unchanged
+before vs after. The two orchestrator passes stayed ~6.5s each at low AND high.
+
+**Root cause of the null result (this corrects my earlier trace analysis):**
+- The orchestrator was **already emitting ≈0 reasoning tokens at its default
+  effort** (v6 baseline: reasoning=0). There was no reasoning time to cut.
+- A controlled experiment on the *raw* gpt-5.4 deployment confirms `reasoning.effort`
+  IS a real lever there (warm: low 2.4s/63 tok, medium 3.8s/210 tok, high 6–7s/
+  360–516 tok). And the v8 high-effort A/B confirms the knob DOES reach the live
+  orchestrator model (decide-pass reasoning rose 9–11 → 40–51). So the wiring is
+  correct — the workload simply doesn't reason much: routing + verbatim relay need
+  ≤51 reasoning tokens at ANY effort.
+- Therefore the orchestrator's ~6.5s/pass is dominated by **fixed hosted-agent +
+  Responses round-trip + MAF tool-calling overhead**, NOT reasoning "thinking"
+  time. (Raw model low pass = 2.4s; orchestrator low pass = 6.5s → ~4s of that is
+  platform/tool-calling overhead per pass, incurred TWICE per turn.)
+
+**Decision on shipping:** Keep `low` shipped (v9). It was user-approved, holds
+routing quality, adds a durable configurable knob, and is the cheapest effort (no
+quality/latency downside). But it is NOT a latency fix — I am not claiming a win it
+doesn't produce.
+
+**Re-pointed recommendation (the ACTUAL latency levers, both need sign-off):**
+1. **Eliminate the 2nd "relay verbatim" gpt-5.4 pass** (~6.5s/turn — the single
+   biggest cut). Relay the sub-agent output straight through instead of re-invoking
+   the LLM to paste it. Owner: Trinity + Morpheus (arch). Sign-off needed.
+2. **Move the routing brain to gpt-5.4-mini** (the decide pass). Owner: Trinity +
+   Tank (deploy). Needs eval.
+3. First-turn cold start (~6s) + hosted-agent warm-keep — Tank's concurrent work.
+
+**Why:** Honors the approved change and leaves a useful knob, while proving —
+per my "an agent that isn't evaluated is just a hope" bar — that reasoning effort
+is not the orchestrator's bottleneck, so the team spends the next effort on the
+levers that will actually move the number (kill the relay pass / mini brain).
+
+
 ### 2026-07-09: Latency investigation — trace-driven per-agent breakdown + forward-request root cause (recommendations only, NO functional change)
 **By:** Trinity (AI / Agent Engineer)
 **Status:** Diagnostic complete. Live-measured against the hosted orchestrator v6 (gpt-5.4),

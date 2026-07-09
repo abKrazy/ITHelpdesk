@@ -154,13 +154,6 @@ def create_hosted_orchestrator() -> None:
         project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         image=image,
-        # Give the hosted container the App Insights connection string so the running
-        # orchestrator can export traces to the same App Insights the Foundry project
-        # is connected to. Non-critical if missing — the SDK also resolves it from the
-        # project's AppInsights connection at runtime.
-        applicationinsights_connection_string=env(
-            "APPLICATIONINSIGHTS_CONNECTION_STRING", required=False, default=None
-        ),
     )
 
 

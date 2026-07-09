@@ -124,11 +124,16 @@ def test_create_hosted_orchestrator_registers_container_agent(
     assert env["TRIAGE_AGENT_NAME"] == "it-helpdesk-triage"
     assert env["INCIDENT_AGENT_NAME"] == "it-helpdesk-incident"
     assert env["AZURE_AI_MODEL_DEPLOYMENT_NAME"] == "gpt-4o"
-    # FOUNDRY_* and AGENT_* are reserved for platform use and auto-injected by
-    # Foundry Hosted Agents — passing them in create_version fails with
-    # "reserved for platform use", so they MUST NOT be in environment_variables.
+    # FOUNDRY_*, AGENT_*, and APPLICATIONINSIGHTS_CONNECTION_STRING are reserved for
+    # platform use and auto-injected by Foundry Hosted Agents — passing them in
+    # create_version fails with "reserved for platform use", so they MUST NOT be in
+    # environment_variables.
     assert "FOUNDRY_PROJECT_ENDPOINT" not in env
+    assert "APPLICATIONINSIGHTS_CONNECTION_STRING" not in env
     assert not any(k.startswith(("FOUNDRY_", "AGENT_")) for k in env)
+    # Non-reserved telemetry knobs ARE set so the container tags/records its traces.
+    assert env["OTEL_SERVICE_NAME"] == "it-helpdesk-orchestrator"
+    assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"
 
     assert persisted["AZURE_AI_ORCHESTRATOR_AGENT_ID"] == "it-helpdesk-orchestrator"
 
@@ -152,37 +157,21 @@ def test_create_hosted_orchestrator_honours_protocol_version_override(
     assert call["definition"].protocol_versions[0].version == "9.9.9"
 
 
-def test_create_hosted_orchestrator_injects_appinsights_telemetry(
+def test_create_hosted_orchestrator_sets_nonreserved_telemetry_knobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """OTEL_SERVICE_NAME + content-recording toggle are set; the reserved
+    APPLICATIONINSIGHTS_CONNECTION_STRING is NEVER injected (platform-injected)."""
     _FakeProjectClient.instances.clear()
     _install_fake_projects_sdk(monkeypatch)
     monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
     monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
-    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
-
-    conn = "InstrumentationKey=abc;IngestionEndpoint=https://x.in.applicationinsights.azure.com/"
-    setup.create_hosted_orchestrator(
-        project_endpoint="https://x/api/projects/p",
-        chat_deployment="gpt-4o",
-        image="acr/it-helpdesk-orchestrator:latest",
-        applicationinsights_connection_string=conn,
+    # Even if a connection string is present in the environment, it must NOT be
+    # passed to create_version — the platform reserves and injects it.
+    monkeypatch.setenv(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING",
+        "InstrumentationKey=abc;IngestionEndpoint=https://x.in.applicationinsights.azure.com/",
     )
-
-    env = _FakeProjectClient.instances[-1].agents.create_calls[0]["definition"].environment_variables
-    assert env["APPLICATIONINSIGHTS_CONNECTION_STRING"] == conn
-    assert env["OTEL_SERVICE_NAME"] == "it-helpdesk-orchestrator"
-    assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"
-
-
-def test_create_hosted_orchestrator_omits_telemetry_when_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _FakeProjectClient.instances.clear()
-    _install_fake_projects_sdk(monkeypatch)
-    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
-    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
-    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
 
     setup.create_hosted_orchestrator(
         project_endpoint="https://x/api/projects/p",
@@ -192,4 +181,5 @@ def test_create_hosted_orchestrator_omits_telemetry_when_absent(
 
     env = _FakeProjectClient.instances[-1].agents.create_calls[0]["definition"].environment_variables
     assert "APPLICATIONINSIGHTS_CONNECTION_STRING" not in env
-    assert "OTEL_SERVICE_NAME" not in env
+    assert env["OTEL_SERVICE_NAME"] == "it-helpdesk-orchestrator"
+    assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"

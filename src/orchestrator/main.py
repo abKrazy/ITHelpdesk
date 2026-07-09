@@ -46,6 +46,10 @@ TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")
 PORT = int(os.environ.get("PORT", "8088"))
 
+# Cloud role name for App Insights (== OTEL service.name). Honors the injected
+# OTEL_SERVICE_NAME env var; defaults to the orchestrator's own name.
+SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "it-helpdesk-orchestrator")
+
 ORCHESTRATOR_INSTRUCTIONS = """\
 You are the IT Helpdesk Orchestrator. You coordinate two specialist sub-agents to
 help an end user, and you carry the whole conversation so you always know the
@@ -100,8 +104,129 @@ Never merely claim you have provided steps; include their full text.
 """
 
 
+# --- Telemetry / OpenTelemetry -> Application Insights -------------------------
+# The hosted container injects APPLICATIONINSIGHTS_CONNECTION_STRING,
+# OTEL_SERVICE_NAME, and AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED (see
+# helpdesk.agents.setup.create_hosted_orchestrator). We wire Azure Monitor as the
+# OTel provider and turn on Microsoft Agent Framework's built-in GenAI
+# instrumentation so orchestrator runs, model calls, and the two sub-agent tool
+# handoffs emit spans to the same App Insights the Foundry project is connected to
+# (visible in the portal Tracing tab). Telemetry is additive and best-effort — it
+# must never crash the agent, so setup is guarded and no-ops when unconfigured.
+_telemetry_configured = False
+_tracer = None
+
+
+def _content_recording_enabled() -> bool:
+    """Whether GenAI message content may be recorded on spans (sensitive data)."""
+    return os.environ.get(
+        "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_connection_string() -> str:
+    """Resolve the App Insights connection string for telemetry export.
+
+    Prefers the ``APPLICATIONINSIGHTS_CONNECTION_STRING`` env var (injected into
+    the hosted container). Falls back to the Foundry project's default AppInsights
+    connection via ``AIProjectClient(...).telemetry.get_connection_string()``.
+    Returns "" when telemetry is not configured (local/mock/offline) so callers
+    no-op instead of crashing.
+    """
+    conn = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "").strip()
+    if conn:
+        return conn
+    if not PROJECT_ENDPOINT:
+        return ""
+    try:
+        from azure.ai.projects import AIProjectClient
+        from azure.identity import DefaultAzureCredential
+
+        project = AIProjectClient(
+            endpoint=PROJECT_ENDPOINT, credential=DefaultAzureCredential()
+        )
+        return (project.telemetry.get_connection_string() or "").strip()
+    except Exception as exc:  # pragma: no cover - live-only fallback
+        _LOGGER.warning("Could not resolve App Insights connection string: %s", exc)
+        return ""
+
+
+def configure_telemetry() -> bool:
+    """Configure OpenTelemetry export to Application Insights once, at startup.
+
+    Wires Azure Monitor as the OTel provider and enables Microsoft Agent
+    Framework's GenAI-semantic-convention instrumentation so agent/model/tool
+    spans flow to App Insights and the Foundry Tracing tab. Content (message)
+    capture is opt-in via ``AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED``.
+
+    Guarded so it no-ops (never raises) when no connection string is available.
+    Returns True when telemetry was configured, False otherwise.
+    """
+    global _telemetry_configured
+    if _telemetry_configured:
+        return True
+
+    conn = _resolve_connection_string()
+    if not conn:
+        _LOGGER.info(
+            "No App Insights connection string (env or project fallback); telemetry "
+            "export disabled — traces will not flow to Application Insights."
+        )
+        return False
+
+    try:
+        # Cloud role name -> App Insights cloud_RoleName. Honor OTEL_SERVICE_NAME.
+        os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
+
+        from azure.monitor.opentelemetry import configure_azure_monitor
+
+        configure_azure_monitor(connection_string=conn)
+
+        # Agent Framework instrumentation is on by default; enable it explicitly and
+        # opt into sensitive (message content) capture only when requested.
+        from agent_framework.observability import (
+            enable_instrumentation,
+            enable_sensitive_telemetry,
+        )
+
+        enable_instrumentation()
+        if _content_recording_enabled():
+            enable_sensitive_telemetry()
+
+        _telemetry_configured = True
+        _LOGGER.info(
+            "Telemetry configured -> Application Insights (service=%s, content_recording=%s)",
+            os.environ.get("OTEL_SERVICE_NAME", SERVICE_NAME),
+            _content_recording_enabled(),
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - never crash startup on telemetry
+        _LOGGER.warning("Telemetry configuration failed (continuing without it): %s", exc)
+        return False
+
+
+def _get_tracer():
+    """Return a cached OpenTelemetry tracer, or None if OTel is unavailable."""
+    global _tracer
+    if _tracer is None:
+        try:
+            from opentelemetry import trace
+
+            _tracer = trace.get_tracer("it-helpdesk-orchestrator")
+        except Exception:  # pragma: no cover - otel always present in container
+            _tracer = False
+    return _tracer or None
+
+
 # --- Sub-agent invocation ------------------------------------------------------
 _oai_client = None
+
+# Maps a sub-agent name back to the orchestrator tool that fronts it, so the
+# handoff span can be attributed with the tool name a user's turn triggered.
+_TOOL_BY_AGENT = {
+    TRIAGE_AGENT_NAME: "troubleshoot_from_knowledge_base",
+    INCIDENT_AGENT_NAME: "manage_servicenow_incident",
+}
 
 
 def _get_openai_client():
@@ -140,8 +265,8 @@ def _extract_output_text(resp) -> str:
     return "\n".join(parts).strip() or "(the sub-agent returned no content)"
 
 
-def _invoke_prompt_agent(agent_name: str, message: str) -> str:
-    """Invoke a Foundry Prompt Agent by *agent reference* and return its text."""
+def _call_prompt_agent(agent_name: str, message: str) -> str:
+    """Do the raw Responses call to a Foundry Prompt Agent by *agent reference*."""
     client = _get_openai_client()
     resp = client.responses.create(
         model=MODEL,
@@ -149,6 +274,37 @@ def _invoke_prompt_agent(agent_name: str, message: str) -> str:
         extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
     )
     return _extract_output_text(resp)
+
+
+def _invoke_prompt_agent(agent_name: str, message: str) -> str:
+    """Invoke a Foundry Prompt Agent by *agent reference* and return its text.
+
+    Wrapped in an explicit OpenTelemetry span so each sub-agent handoff (triage or
+    incident) is visible in the Foundry Tracing tab with the target agent name and
+    the orchestrator tool that fronts it — even where the framework's own
+    instrumentation doesn't cover the raw Responses call. The span no-ops cleanly
+    when OpenTelemetry / telemetry export isn't configured (local/mock runs).
+    """
+    tracer = _get_tracer()
+    if tracer is None:
+        return _call_prompt_agent(agent_name, message)
+
+    with tracer.start_as_current_span(f"invoke_agent {agent_name}") as span:
+        span.set_attribute("gen_ai.operation.name", "invoke_agent")
+        span.set_attribute("gen_ai.agent.name", agent_name)
+        tool_name = _TOOL_BY_AGENT.get(agent_name)
+        if tool_name:
+            span.set_attribute("gen_ai.tool.name", tool_name)
+        if _content_recording_enabled():
+            span.set_attribute("gen_ai.input.messages", message)
+        try:
+            text = _call_prompt_agent(agent_name, message)
+        except Exception as exc:  # pragma: no cover - record then re-raise
+            span.record_exception(exc)
+            raise
+        if _content_recording_enabled():
+            span.set_attribute("gen_ai.output.messages", text)
+        return text
 
 
 # --- Tools ---------------------------------------------------------------------
@@ -212,6 +368,10 @@ def main() -> None:
     from agent_framework_foundry_hosting import ResponsesHostServer
 
     logging.basicConfig(level=logging.INFO)
+    # Wire OpenTelemetry -> Application Insights before serving so every agent
+    # run, model call, and sub-agent handoff exports a span. No-ops safely when
+    # the connection string is absent (local/mock).
+    configure_telemetry()
     _LOGGER.info(
         "Starting IT Helpdesk Orchestrator hosted agent on port %s "
         "(project=%s, model=%s, triage=%s, incident=%s)",

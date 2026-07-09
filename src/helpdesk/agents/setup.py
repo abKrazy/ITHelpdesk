@@ -331,7 +331,6 @@ def create_hosted_orchestrator(
     cpu: str = "1",
     memory: str = "2Gi",
     responses_version: str | None = None,
-    applicationinsights_connection_string: str | None = None,
 ) -> str:
     """Register the MAF orchestrator container as a Foundry **Hosted Agent**.
 
@@ -342,12 +341,16 @@ def create_hosted_orchestrator(
     code-ZIP path in azure-ai-projects 2.3.0 is only a private method).
 
     ``create_version`` is idempotent-friendly: re-running publishes a new version
-    of the same named agent. Foundry **reserves** and auto-injects all ``FOUNDRY_*``
-    and ``AGENT_*`` environment variables (including ``FOUNDRY_PROJECT_ENDPOINT``),
-    so we must NOT set them here — the registration API rejects reserved keys. We
-    only pass the non-reserved vars the container needs (the model deployment, the
-    sub-agent names, and — when available — the App Insights connection string plus
-    OTEL/GenAI tracing toggles so the running container can export traces).
+    of the same named agent. Foundry **reserves** and auto-injects the platform
+    environment variables — all ``FOUNDRY_*`` and ``AGENT_*`` (including
+    ``FOUNDRY_PROJECT_ENDPOINT``) **and** ``APPLICATIONINSIGHTS_CONNECTION_STRING``
+    (from the project's default AppInsights connection) — so we must NOT set them
+    here; the registration API rejects reserved keys with "reserved for platform
+    use". We only pass the non-reserved vars the container needs: the model
+    deployment, the sub-agent names, and the OTEL/GenAI tracing knobs (cloud role
+    name + content-recording toggle) that ``main.py``'s telemetry setup reads.
+    ``main.py`` resolves the App Insights connection string from the injected env
+    var (or the project's AppInsights connection as a runtime fallback).
     """
     from azure.ai.projects import AIProjectClient
     from azure.ai.projects.models import (
@@ -363,28 +366,21 @@ def create_hosted_orchestrator(
         or os.environ.get("FOUNDRY_RESPONSES_PROTOCOL_VERSION")
         or _DEFAULT_RESPONSES_VERSION
     )
-    # NOTE: FOUNDRY_* and AGENT_* are reserved for platform use and injected by
-    # Foundry at run time — passing them here fails registration with
-    # "invalid_payload ... reserved for platform use". main.py reads the
-    # platform-injected FOUNDRY_PROJECT_ENDPOINT for the project endpoint.
+    # NOTE: FOUNDRY_*, AGENT_*, and APPLICATIONINSIGHTS_CONNECTION_STRING are
+    # reserved for platform use and injected by Foundry at run time — passing any
+    # of them here fails registration with "invalid_payload ... reserved for
+    # platform use". main.py reads the platform-injected FOUNDRY_PROJECT_ENDPOINT
+    # and APPLICATIONINSIGHTS_CONNECTION_STRING at run time. We set only the
+    # non-reserved telemetry knobs: the App Insights cloud role name
+    # (OTEL_SERVICE_NAME) and the GenAI content-recording toggle, so the running
+    # orchestrator tags and records its traces correctly.
     environment_variables = {
         "AZURE_AI_MODEL_DEPLOYMENT_NAME": chat_deployment,
         "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
         "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
+        "OTEL_SERVICE_NAME": _ORCHESTRATOR_NAME,
+        "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED": "true",
     }
-    # Telemetry: give the hosted container the App Insights connection string so the
-    # running orchestrator (once Trinity adds the instrumentation) exports traces to
-    # the same App Insights the Foundry project is connected to. APPLICATIONINSIGHTS_*
-    # is NOT reserved (unlike FOUNDRY_*/AGENT_*), so it is safe to set here. Read from
-    # the environment — never hardcode the connection string.
-    appinsights_conn = (
-        applicationinsights_connection_string
-        or os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
-    ).strip()
-    if appinsights_conn:
-        environment_variables["APPLICATIONINSIGHTS_CONNECTION_STRING"] = appinsights_conn
-        environment_variables["OTEL_SERVICE_NAME"] = "it-helpdesk-orchestrator"
-        environment_variables["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = "true"
     definition = HostedAgentDefinition(
         cpu=cpu,
         memory=memory,

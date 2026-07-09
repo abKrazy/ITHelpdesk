@@ -17,6 +17,17 @@
     input { flex: 1; padding: 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 15px; }
     button { padding: 12px 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; }
     button:disabled { opacity: .6; cursor: default; }
+    .thinking { color: #6b7280; font-style: italic; }
+    .thinking::after {
+      content: '…';
+      display: inline-block;
+      animation: think-dots 1.2s steps(4, end) infinite;
+      width: 1.2em; text-align: left; overflow: hidden; vertical-align: bottom;
+    }
+    @keyframes think-dots {
+      0%   { clip-path: inset(0 100% 0 0); }
+      100% { clip-path: inset(0 0 0 0); }
+    }
   </style>
 </head>
 <body>
@@ -69,6 +80,101 @@
       return data;
     }
 
+    function renderRoute(route) {
+      if (route && route.length) {
+        const r = document.createElement('div');
+        r.className = 'route';
+        r.textContent = 'routed via: ' + route.join(' \u2192 ');
+        chat.appendChild(r);
+        chat.scrollTop = chat.scrollHeight;
+      }
+    }
+
+    // Fallback: the original blocking POST /api/chat call.
+    async function fallbackChat(message, history, bubble) {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, history })
+      });
+      const data = await readChatResponse(res);
+      const reply = data.reply || '(no response)';
+      bubble.classList.remove('thinking');
+      bubble.textContent = reply;
+      renderRoute(data.route);
+      turns.push({ role: 'assistant', content: reply });
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    // Stream the reply token-by-token from POST /api/chat/stream (SSE over fetch).
+    async function streamChat(message, history, bubble) {
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, history })
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`stream unavailable (HTTP ${res.status})`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let text = '';
+      let started = false;
+      let route = [];
+      let sawTerminal = false;
+
+      const handleEvent = (payload) => {
+        if (payload.type === 'token') {
+          if (!started) {
+            started = true;
+            bubble.classList.remove('thinking');
+            bubble.textContent = '';
+          }
+          text += payload.text;
+          bubble.textContent = text;
+          chat.scrollTop = chat.scrollHeight;
+        } else if (payload.type === 'done') {
+          sawTerminal = true;
+          route = payload.route || [];
+        } else if (payload.type === 'error') {
+          sawTerminal = true;
+          bubble.classList.remove('thinking');
+          text = payload.text || 'The agent reported an error.';
+          bubble.textContent = text;
+        }
+      };
+
+      const flushLine = (line) => {
+        const trimmed = line.replace(/\r$/, '');
+        if (!trimmed.startsWith('data:')) return;
+        const raw = trimmed.slice(5).trim();
+        if (!raw) return;
+        try {
+          handleEvent(JSON.parse(raw));
+        } catch (_e) { /* ignore malformed frame */ }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          flushLine(buffer.slice(0, idx));
+          buffer = buffer.slice(idx + 1);
+        }
+      }
+      if (buffer) flushLine(buffer);
+
+      if (!started && !sawTerminal) {
+        throw new Error('stream closed before any content');
+      }
+      renderRoute(route);
+      turns.push({ role: 'assistant', content: text || '(no response)' });
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const message = input.value.trim();
@@ -77,22 +183,26 @@
       add(message, 'user', 'user');
       input.value = '';
       send.disabled = true;
+
+      const bubble = document.createElement('div');
+      bubble.className = 'msg bot thinking';
+      bubble.textContent = 'Thinking';
+      chat.appendChild(bubble);
+      chat.scrollTop = chat.scrollHeight;
+
       try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, history })
-        });
-        const data = await readChatResponse(res);
-        add(data.reply || '(no response)', 'bot', 'assistant');
-        if (data.route && data.route.length) {
-          const r = document.createElement('div');
-          r.className = 'route';
-          r.textContent = 'routed via: ' + data.route.join(' \u2192 ');
-          chat.appendChild(r);
+        try {
+          await streamChat(message, history, bubble);
+        } catch (streamErr) {
+          // Streaming failed to start — fall back to the blocking endpoint so
+          // the UI still works.
+          bubble.classList.add('thinking');
+          bubble.textContent = 'Thinking';
+          await fallbackChat(message, history, bubble);
         }
       } catch (err) {
-        add('Error contacting the agent: ' + err, 'bot', 'assistant');
+        bubble.classList.remove('thinking');
+        bubble.textContent = 'Error contacting the agent: ' + err;
       } finally {
         send.disabled = false;
         input.focus();

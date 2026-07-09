@@ -10,6 +10,8 @@ depend on.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -128,3 +130,90 @@ def test_chat_requires_message_field(client: TestClient) -> None:
     """A malformed body (missing 'message') is rejected with 422, not a 500."""
     resp = client.post("/api/chat", json={})
     assert resp.status_code == 422
+
+
+def _parse_sse(body: str) -> list[dict]:
+    events: list[dict] = []
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            events.append(json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def test_chat_stream_yields_tokens_then_done(client: TestClient) -> None:
+    """The streaming endpoint emits multiple token frames then a done frame.
+
+    Mock mode chunks the reply by word, so the browser exercises the same
+    incremental token-rendering path used against the live hosted orchestrator.
+    """
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={"message": "lookup details for incident INC0000057"},
+    ) as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        body = "".join(resp.iter_text())
+
+    events = _parse_sse(body)
+    tokens = [e for e in events if e["type"] == "token"]
+    done = [e for e in events if e["type"] == "done"]
+
+    assert len(tokens) > 1, "expected the reply to arrive as multiple token frames"
+    assert len(done) == 1, "expected exactly one terminal 'done' frame"
+    assert done[0]["route"] == ["incident"]
+
+    reply = "".join(t["text"] for t in tokens)
+    assert "INC0000057" in reply
+    assert "State:" in reply
+
+
+def test_chat_stream_confirmation_uses_history(client: TestClient) -> None:
+    """History threading works identically on the streaming endpoint."""
+    original = "my laptop is running slow. please file a ticket."
+    offer = client.post("/api/chat", json={"message": original}).json()["reply"]
+
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "go ahead",
+            "history": [
+                {"role": "user", "content": original},
+                {"role": "assistant", "content": offer},
+            ],
+        },
+    ) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    events = _parse_sse(body)
+    done = next(e for e in events if e["type"] == "done")
+    assert done["route"] == ["triage", "incident"]
+    reply = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Created incident INC" in reply
+
+
+def test_chat_stream_failure_yields_error_frame(client: TestClient) -> None:
+    """A downstream failure is delivered as a structured 'error' frame, not a 500."""
+
+    class FailingOrchestrator:
+        def run(self, _message: str, history=None) -> None:
+            raise RuntimeError("MCP endpoint unreachable")
+
+    previous = app.state.orchestrator
+    app.state.orchestrator = FailingOrchestrator()
+    try:
+        with client.stream(
+            "POST", "/api/chat/stream", json={"message": "lookup INC0000057"}
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+    finally:
+        app.state.orchestrator = previous
+
+    events = _parse_sse(body)
+    error = next(e for e in events if e["type"] == "error")
+    assert error["error"] == "MCP endpoint unreachable"
+    assert "couldn't reach the ServiceNow backend" in error["text"]

@@ -1,15 +1,30 @@
 """The MAF Foundry Hosted Agent entrypoint (``src/orchestrator/main.py``).
 
 Loaded by file path (it ships as a standalone container app, not part of the
-``helpdesk`` package) and exercised offline: the module must import, expose two
-tools that route to the correct Foundry Prompt Agents by name, and carry the
-deflect-first / follow-up routing rules in its instructions.
+``helpdesk`` package) and exercised offline. The orchestrator now does ONE
+routing model pass and then streams the chosen sub-agent's answer straight
+through as the terminal reply — there is NO second (relay) model generation.
+These tests pin that routing-then-proxy behavior offline:
+
+* the module imports and advertises exactly two routing tools that map to the
+  correct Foundry Prompt Agents by name;
+* the routing pass classifies intent and returns a self-contained sub-agent
+  input (create-on-confirm must be self-contained from history);
+* the streaming proxy emits the handoff ``function_call`` chip FIRST, then the
+  sub-agent's text deltas — the exact outer SSE shape the UI consumes — and it
+  forwards ONLY ``response.output_text.delta`` events from the inner stream;
+* sub-agents are still invoked with their OWN model deployment (Foundry rejects
+  a model/agent mismatch with HTTP 400).
 """
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,15 +36,52 @@ def orchestrator_main():
     spec = importlib.util.spec_from_file_location("orchestrator_main", _MAIN_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
+    # Register so dataclass/typing resolution works when loaded by file path.
+    sys.modules["orchestrator_main"] = module
     spec.loader.exec_module(module)
     return module
 
 
-def test_module_imports_and_exposes_two_tools(orchestrator_main) -> None:
-    tools = orchestrator_main.TOOLS
+# --- helpers ------------------------------------------------------------------
+def _fc_item(name: str, arguments: str, call_id: str = "call_abc"):
+    return SimpleNamespace(
+        type="function_call", name=name, arguments=arguments, call_id=call_id
+    )
+
+
+def _drain_stream(agen) -> list:
+    """Collect every AgentResponseUpdate from an async generator synchronously."""
+
+    async def _collect():
+        out = []
+        async for update in agen:
+            out.append(update)
+        return out
+
+    return asyncio.run(_collect())
+
+
+# --- module surface -----------------------------------------------------------
+def test_module_imports_and_exposes_two_routing_tools(orchestrator_main) -> None:
+    tools = orchestrator_main.ROUTING_TOOLS
     assert len(tools) == 2
-    names = {getattr(t, "name", None) for t in tools}
+    names = {t["name"] for t in tools}
     assert names == {"troubleshoot_from_knowledge_base", "manage_servicenow_incident"}
+    # Flat Responses function-tool shape.
+    for t in tools:
+        assert t["type"] == "function"
+        assert t["parameters"]["type"] == "object"
+
+
+def test_routing_tools_map_to_correct_prompt_agents(orchestrator_main) -> None:
+    assert orchestrator_main._AGENT_BY_TOOL == {
+        "troubleshoot_from_knowledge_base": "it-helpdesk-triage",
+        "manage_servicenow_incident": "it-helpdesk-incident",
+    }
+    assert orchestrator_main._ARG_FIELD_BY_TOOL == {
+        "troubleshoot_from_knowledge_base": "problem",
+        "manage_servicenow_incident": "request",
+    }
 
 
 def test_default_sub_agent_names(orchestrator_main) -> None:
@@ -38,28 +90,289 @@ def test_default_sub_agent_names(orchestrator_main) -> None:
     assert orchestrator_main.PORT == 8088
 
 
-def test_tools_route_to_correct_prompt_agents(orchestrator_main, monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        orchestrator_main,
-        "_invoke_prompt_agent",
-        lambda agent, message: calls.append((agent, message)) or f"ok:{agent}",
-    )
+def test_build_agent_returns_relay_orchestrator(orchestrator_main) -> None:
+    agent = orchestrator_main.build_agent()
+    assert isinstance(agent, orchestrator_main.RelayOrchestrator)
+    assert agent.name == "it-helpdesk-orchestrator"
 
-    assert (
-        orchestrator_main.troubleshoot_from_knowledge_base("laptop slow")
-        == "ok:it-helpdesk-triage"
-    )
-    assert (
-        orchestrator_main.manage_servicenow_incident("status of INC0010036")
-        == "ok:it-helpdesk-incident"
-    )
-    assert calls == [
-        ("it-helpdesk-triage", "laptop slow"),
-        ("it-helpdesk-incident", "status of INC0010036"),
+
+# --- routing instructions -----------------------------------------------------
+def test_routing_instructions_encode_rules(orchestrator_main) -> None:
+    instructions = orchestrator_main.ROUTING_INSTRUCTIONS
+    # Intent classification runs before deflect-first.
+    assert "CLASSIFY INTENT FIRST" in instructions
+    assert instructions.index("CLASSIFY INTENT FIRST") < instructions.index(
+        "DEFLECT FIRST"
+    ), "intent classification must come before DEFLECT FIRST"
+    # Status/lookup/update intents must skip triage / KB retrieval entirely.
+    assert "MUST skip triage entirely" in instructions
+    # Deflect-first: KB before any ticket (intent A only).
+    assert "troubleshoot_from_knowledge_base FIRST" in instructions
+    # Create only on confirmation, with a self-contained request from history.
+    assert "CREATE ONLY ON CONFIRMATION" in instructions
+    assert "self-contained" in instructions
+    # The router must NOT relay/repeat the sub-agent's answer.
+    assert "do NOT relay" in instructions or "not relay" in instructions.lower()
+
+
+# --- reasoning knob -----------------------------------------------------------
+def test_reasoning_effort_defaults_to_low(orchestrator_main) -> None:
+    assert orchestrator_main.REASONING_EFFORT == "low"
+
+
+def test_reasoning_option_pins_effort(orchestrator_main, monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "low")
+    assert orchestrator_main._reasoning_option() == {"effort": "low"}
+    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "MEDIUM")
+    assert orchestrator_main._reasoning_option() == {"effort": "medium"}
+
+
+def test_reasoning_option_omitted_when_unset(orchestrator_main, monkeypatch) -> None:
+    for sentinel in ("", "default", "DEFAULT"):
+        monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", sentinel)
+        assert orchestrator_main._reasoning_option() is None
+
+
+# --- message flattening + arg extraction --------------------------------------
+def test_messages_to_input_flattens_history(orchestrator_main) -> None:
+    from agent_framework import Message
+
+    msgs = [
+        Message("user", ["my laptop is slow"]),
+        Message("assistant", ["Did these steps resolve the issue?"]),
+        Message("user", ["no, please file it"]),
+    ]
+    items = orchestrator_main._messages_to_input(msgs)
+    assert items == [
+        {"role": "user", "content": "my laptop is slow"},
+        {"role": "assistant", "content": "Did these steps resolve the issue?"},
+        {"role": "user", "content": "no, please file it"},
     ]
 
 
+def test_messages_to_input_accepts_plain_string(orchestrator_main) -> None:
+    assert orchestrator_main._messages_to_input("vpn down") == [
+        {"role": "user", "content": "vpn down"}
+    ]
+
+
+def test_tool_args_to_message_reads_schema_field(orchestrator_main) -> None:
+    assert (
+        orchestrator_main._tool_args_to_message(
+            "troubleshoot_from_knowledge_base", '{"problem":"vpn is down"}'
+        )
+        == "vpn is down"
+    )
+    assert (
+        orchestrator_main._tool_args_to_message(
+            "manage_servicenow_incident",
+            '{"request":"create an incident for: laptop slow; assign to Desktop Support"}',
+        )
+        == "create an incident for: laptop slow; assign to Desktop Support"
+    )
+
+
+def test_tool_args_to_message_tolerates_bad_json(orchestrator_main) -> None:
+    assert (
+        orchestrator_main._tool_args_to_message(
+            "troubleshoot_from_knowledge_base", "not json"
+        )
+        == "not json"
+    )
+
+
+# --- routing pass -------------------------------------------------------------
+def _patch_route_client(orchestrator_main, monkeypatch, response):
+    class _FakeResponses:
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return response
+
+    fake = _FakeResponses()
+
+    class _FakeClient:
+        responses = fake
+
+    monkeypatch.setattr(orchestrator_main, "_get_openai_client", lambda: _FakeClient())
+    return fake
+
+
+def test_route_intent_selects_triage(orchestrator_main, monkeypatch) -> None:
+    resp = SimpleNamespace(
+        output=[_fc_item("troubleshoot_from_knowledge_base", '{"problem":"laptop slow"}')],
+        output_text=None,
+    )
+    fake = _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent([{"role": "user", "content": "laptop slow"}])
+    assert decision.tool_name == "troubleshoot_from_knowledge_base"
+    assert decision.agent_name == "it-helpdesk-triage"
+    assert decision.sub_agent_input == "laptop slow"
+    assert decision.direct_text is None
+    # Routing pass runs ONE model call with tools, no parallel tool calls.
+    assert fake.last_kwargs["tools"] is orchestrator_main.ROUTING_TOOLS
+    assert fake.last_kwargs["parallel_tool_calls"] is False
+    assert fake.last_kwargs["store"] is False
+
+
+def test_route_intent_selects_incident_for_status(orchestrator_main, monkeypatch) -> None:
+    resp = SimpleNamespace(
+        output=[_fc_item("manage_servicenow_incident", '{"request":"status of INC0010045"}')],
+        output_text=None,
+    )
+    _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent(
+        [{"role": "user", "content": "what is the status of INC0010045?"}]
+    )
+    assert decision.tool_name == "manage_servicenow_incident"
+    assert decision.agent_name == "it-helpdesk-incident"
+    assert decision.sub_agent_input == "status of INC0010045"
+
+
+def test_route_intent_create_confirm_is_self_contained(orchestrator_main, monkeypatch) -> None:
+    """create-on-confirm: the router reads the ORIGINAL problem + assignment group
+    out of history so the incident sub-agent input is self-contained even though
+    the latest user turn is just "yes, create it"."""
+    args = json.dumps(
+        {"request": "create an incident for: my laptop is running slow; assign to Desktop Support"}
+    )
+    resp = SimpleNamespace(
+        output=[_fc_item("manage_servicenow_incident", args)], output_text=None
+    )
+    _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent(
+        [
+            {"role": "user", "content": "my laptop is running slow, open a ticket"},
+            {"role": "assistant", "content": "Try... Assignment Group: Desktop Support. Did these help?"},
+            {"role": "user", "content": "yes, create it"},
+        ]
+    )
+    assert decision.agent_name == "it-helpdesk-incident"
+    assert "my laptop is running slow" in decision.sub_agent_input
+    assert "Desktop Support" in decision.sub_agent_input
+
+
+def test_route_intent_direct_reply_when_no_tool(orchestrator_main, monkeypatch) -> None:
+    resp = SimpleNamespace(output=[], output_text="Could you share the incident number?")
+    _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent([{"role": "user", "content": "help"}])
+    assert decision.tool_name is None
+    assert decision.agent_name is None
+    assert decision.direct_text == "Could you share the incident number?"
+
+
+# --- streaming proxy ----------------------------------------------------------
+def test_iter_prompt_agent_text_forwards_only_output_text_delta(
+    orchestrator_main, monkeypatch
+) -> None:
+    """The proxy must forward ONLY response.output_text.delta events so the inner
+    sub-agent's own tool calls never leak as bogus handoff chips on the outer
+    stream. Citations arrive inline in text deltas and are preserved."""
+    events = [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(type="response.output_item.added"),
+        # inner sub-agent tool call — MUST be dropped
+        SimpleNamespace(type="response.function_call_arguments.delta", delta='{"q":'),
+        SimpleNamespace(type="response.output_text.delta", delta="1. Restart. "),
+        SimpleNamespace(type="response.output_text.delta", delta="See [1]\u2020source."),
+        SimpleNamespace(type="response.output_text.done", text="ignored"),
+        SimpleNamespace(type="response.completed"),
+    ]
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            assert kwargs["model"] == "gpt-5.4-mini"
+            assert kwargs["extra_body"]["agent_reference"]["name"] == "it-helpdesk-triage"
+            return iter(events)
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    monkeypatch.setattr(orchestrator_main, "_get_openai_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        orchestrator_main,
+        "_MODEL_BY_AGENT",
+        {"it-helpdesk-triage": "gpt-5.4-mini", "it-helpdesk-incident": "gpt-5.4"},
+    )
+
+    out = list(
+        orchestrator_main._iter_prompt_agent_text("it-helpdesk-triage", "laptop slow")
+    )
+    assert out == ["1. Restart. ", "See [1]\u2020source."]
+
+
+def test_run_stream_emits_chip_then_text(orchestrator_main, monkeypatch) -> None:
+    """GOLDEN SSE SHAPE: streaming a routed turn yields the handoff function_call
+    chip FIRST (so the UI shows "Calling Triage Agent"), then the sub-agent's text
+    deltas — with NO second orchestrator model generation in between."""
+    decision = orchestrator_main.RouteDecision(
+        tool_name="troubleshoot_from_knowledge_base",
+        agent_name="it-helpdesk-triage",
+        sub_agent_input="laptop slow",
+        call_id="call_123",
+        arguments_json='{"problem":"laptop slow"}',
+    )
+    monkeypatch.setattr(orchestrator_main, "_route_intent", lambda items: decision)
+
+    async def _fake_astream(agent_name, message):
+        assert agent_name == "it-helpdesk-triage"
+        for chunk in ["1. Restart your VPN client. ", "Did these steps resolve it?"]:
+            yield chunk
+
+    monkeypatch.setattr(orchestrator_main, "_astream_prompt_agent", _fake_astream)
+
+    agent = orchestrator_main.build_agent()
+    updates = _drain_stream(agent.run(messages="my laptop is slow", stream=True))
+
+    # First update = the handoff chip (function_call) the UI consumes.
+    first = updates[0].contents[0]
+    assert first.type == "function_call"
+    assert first.name == "troubleshoot_from_knowledge_base"
+    assert first.call_id == "call_123"
+    assert first.arguments == '{"problem":"laptop slow"}'
+    # Remaining updates = the sub-agent's answer streamed straight through.
+    texts = [u.contents[0].text for u in updates[1:]]
+    assert texts == ["1. Restart your VPN client. ", "Did these steps resolve it?"]
+
+
+def test_run_stream_direct_reply_has_no_chip(orchestrator_main, monkeypatch) -> None:
+    """A direct clarifying reply from the routing pass streams through as text with
+    NO function_call chip (no sub-agent was selected)."""
+    decision = orchestrator_main.RouteDecision(direct_text="Which incident number?")
+    monkeypatch.setattr(orchestrator_main, "_route_intent", lambda items: decision)
+
+    agent = orchestrator_main.build_agent()
+    updates = _drain_stream(agent.run(messages="help me", stream=True))
+    assert all(c.type == "text" for u in updates for c in u.contents)
+    assert "".join(c.text for u in updates for c in u.contents) == "Which incident number?"
+
+
+def test_run_nonstream_returns_terminal_message(orchestrator_main, monkeypatch) -> None:
+    decision = orchestrator_main.RouteDecision(
+        tool_name="manage_servicenow_incident",
+        agent_name="it-helpdesk-incident",
+        sub_agent_input="status of INC0010045",
+        call_id="call_9",
+        arguments_json='{"request":"status of INC0010045"}',
+    )
+    monkeypatch.setattr(orchestrator_main, "_route_intent", lambda items: decision)
+    monkeypatch.setattr(
+        orchestrator_main,
+        "_invoke_prompt_agent",
+        lambda agent, message: f"INC0010045 is In Progress ({agent})",
+    )
+
+    agent = orchestrator_main.build_agent()
+    response = asyncio.run(agent.run(messages="status of INC0010045", stream=False))
+    text = response.messages[0].contents[0].text
+    assert "INC0010045 is In Progress" in text
+
+
+# --- model-per-agent regression (unchanged behavior) --------------------------
 def test_call_prompt_agent_uses_each_agents_own_model(orchestrator_main, monkeypatch) -> None:
     """Regression: invoking a Prompt Agent by agent_reference MUST pass that
     agent's own deployment. The Foundry Responses API rejects a mismatch with
@@ -72,8 +385,6 @@ def test_call_prompt_agent_uses_each_agents_own_model(orchestrator_main, monkeyp
     class _FakeResponses:
         def create(self, **kwargs):
             captured.append(kwargs)
-            from types import SimpleNamespace
-
             return SimpleNamespace(output_text="ok", output=None)
 
     class _FakeClient:
@@ -89,80 +400,16 @@ def test_call_prompt_agent_uses_each_agents_own_model(orchestrator_main, monkeyp
     orchestrator_main._call_prompt_agent("it-helpdesk-triage", "laptop slow")
     orchestrator_main._call_prompt_agent("it-helpdesk-incident", "status of INC0010036")
 
-    # Triage invoked with its own (mini) model; incident with the main model.
     assert captured[0]["model"] == "gpt-5.4-mini"
-    assert (
-        captured[0]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-triage"
-    )
+    assert captured[0]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-triage"
     assert captured[1]["model"] == "gpt-5.4"
-    assert (
-        captured[1]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-incident"
-    )
-
-
-def test_default_options_pin_low_reasoning_effort(orchestrator_main, monkeypatch) -> None:
-    """The orchestrator's own gpt-5.x passes must run at the configured reasoning
-    effort (default ``low``) — the #1 latency lever — while keeping store=False.
-    reasoning models reject temperature/max_tokens, so those must NOT be present.
-    """
-    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "low")
-    opts = orchestrator_main._build_default_options()
-    assert opts["store"] is False
-    assert opts["reasoning"] == {"effort": "low"}
-    assert "temperature" not in opts
-    assert "max_tokens" not in opts
-
-
-def test_default_options_honour_custom_effort(orchestrator_main, monkeypatch) -> None:
-    """ORCHESTRATOR_REASONING_EFFORT is configurable (e.g. back off to minimal or
-    up to medium) without a rebuild — _build_default_options reflects it."""
-    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "minimal")
-    assert orchestrator_main._build_default_options()["reasoning"] == {"effort": "minimal"}
-
-    monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", "MEDIUM")
-    assert orchestrator_main._build_default_options()["reasoning"] == {"effort": "medium"}
-
-
-def test_default_options_omit_reasoning_when_unset(orchestrator_main, monkeypatch) -> None:
-    """An empty / ``default`` effort omits the override so the model uses its own
-    default effort — the option must not carry a stray/empty reasoning block."""
-    for sentinel in ("", "default", "DEFAULT"):
-        monkeypatch.setattr(orchestrator_main, "REASONING_EFFORT", sentinel)
-        opts = orchestrator_main._build_default_options()
-        assert opts == {"store": False}
-        assert "reasoning" not in opts
-
-
-def test_reasoning_effort_defaults_to_low(orchestrator_main) -> None:
-    """With no ORCHESTRATOR_REASONING_EFFORT env set, the module defaults to low."""
-    assert orchestrator_main.REASONING_EFFORT == "low"
-
-
-def test_instructions_encode_routing_rules(orchestrator_main) -> None:
-    instructions = orchestrator_main.ORCHESTRATOR_INSTRUCTIONS
-    # Intent classification runs before deflect-first.
-    assert "CLASSIFY INTENT FIRST" in instructions
-    assert instructions.index("CLASSIFY INTENT FIRST") < instructions.index(
-        "DEFLECT FIRST"
-    ), "intent classification must come before DEFLECT FIRST"
-    # Status/lookup/update intents must skip triage / KB retrieval entirely.
-    assert "NEVER call\n         troubleshoot_from_knowledge_base for these" in instructions
-    assert "MUST skip triage entirely" in instructions
-    # Deflect-first: KB before any ticket (intent A only).
-    assert "DEFLECT FIRST" in instructions
-    assert "troubleshoot_from_knowledge_base FIRST" in instructions
-    # Follow-up questions about an existing ticket go to the incident tool, NOT KB.
-    assert "manage_servicenow_incident" in instructions
-    assert "NEVER answer a question about an existing ticket from the" in instructions
+    assert captured[1]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-incident"
 
 
 def test_extract_output_text_prefers_output_text(orchestrator_main) -> None:
-    from types import SimpleNamespace
-
     resp = SimpleNamespace(output_text="hello world", output=None)
     assert orchestrator_main._extract_output_text(resp) == "hello world"
 
-    # Falls back to walking output[].content[].text
     resp2 = SimpleNamespace(
         output_text=None,
         output=[SimpleNamespace(content=[SimpleNamespace(text="from parts")])],

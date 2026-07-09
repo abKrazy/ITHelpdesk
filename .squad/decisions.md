@@ -2,6 +2,271 @@
 
 ## Active Decisions
 
+### 2026-07-09: Triage traces + orchestrator traces diagnosed live — config already correct, no code/infra change
+**By:** Trinity
+**What:** Investigated the report that "triage + orchestrator agents are not
+logging traces." Diagnosed LIVE via KQL against App Insights `appi-ztk6zx5aedqtc`
+(app GUID `4505fe85-82ee-4226-881f-f24556379ac6`) BEFORE changing anything.
+Conclusion: **all three agents DO emit traces; the reported gap was a transient
+post-republish warm-up window, now self-healed and verified.** No orchestrator
+rebuild, no bicep change, no code change was required for tracing.
+
+**What is present / what was missing:**
+- (a) Hosted orchestrator's own spans — **present** under `cloud_RoleName ==
+  'it-helpdesk-orchestrator'`: `invoke_agent it-helpdesk-orchestrator`,
+  `execute_tool troubleshoot_from_knowledge_base` / `manage_servicenow_incident`,
+  `chat gpt-5.4`. Verified the v5 (gpt-5.4) container still initializes Azure
+  Monitor — no OTel regression from the gpt-5.4 redeploy.
+- (b)/(c) Triage + incident Prompt Agent internal spans — **present** but under
+  `cloud_RoleName == 'responsesapi'` (Foundry's managed responses runtime, NOT
+  the agent names): `invoke_agent it-helpdesk-triage:N`,
+  `invoke_agent it-helpdesk-incident:N`, `chat <model>`,
+  `execute_tool mcp_knowledge-base.knowledge_base_retrieve`,
+  `execute_tool mcp_servicenow-apim.*`. The span NAME carries the agent+version,
+  so they are findable — but a filter by `cloud_RoleName == 'it-helpdesk-triage'`
+  finds nothing, which is likely why they looked "missing."
+
+**Root cause of the transient gap:** Right after a Prompt Agent `create_version`
+republish, the Foundry managed runtime for the new version cold-starts and its
+App Insights export takes a few minutes to warm up. Live timeline proof: prompt
+agents were republished 08:04Z; orchestrator drove tool calls at 08:20–08:22Z
+with NO `responsesapi` traces; by 08:35Z direct + 08:45Z orchestrator-driven
+flows produced full `responsesapi` traces again. The Task-2 triage republish
+(v5, ~08:53Z) reproduced the same brief gap, then recovered — triage `gpt-5.4-mini`
+spans appeared by ~08:59Z. This warm-up is inherent Foundry platform behavior and
+self-heals; it is not a defect in our code or infra.
+
+**Config verified correct + durable (idempotent via `azd up`):**
+- Project↔App Insights connection `proj-ztk6zx5aedqtc-appinsights` exists,
+  `isDefault=true`, `category=AppInsights`, target = `appi-ztk6zx5aedqtc`. This is
+  created control-plane in `infra/modules/foundry.bicep`
+  (`resource appInsightsConnection ... name '${aiProjectName}-appinsights'`,
+  lines ~210–226) so `azd up` reproduces it. No bicep change needed.
+- Orchestrator hosted-agent env vars are correct: `OTEL_SERVICE_NAME=
+  it-helpdesk-orchestrator`, `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED=true`,
+  `AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.4`. `APPLICATIONINSIGHTS_CONNECTION_STRING`
+  is (correctly) NOT set in the container env — it is reserved + auto-injected by
+  Foundry; `main.py` reads it at runtime.
+
+**Known platform limitation (documented, not fixable in our code):** the Foundry
+responses backend starts its OWN root trace for each prompt-agent invocation
+instead of continuing the orchestrator's propagated `traceparent`, so the
+orchestrator trace and the prompt-agent trace are NOT linked parent↔child in the
+end-to-end transaction view. Both are still individually visible in App Insights
+and the Foundry Tracing tab. Confirmed by experiment: a call carrying a parent
+span still produced `responsesapi` spans under a DIFFERENT `operation_Id`.
+
+**LIVE KQL evidence (post-fix, all three agents tracing):**
+Driving a full orchestrator flow (deflect → KB steps → create INC0010050) at
+08:45Z, then querying `union dependencies,requests where timestamp>08:45Z`:
+- `it-helpdesk-orchestrator`: trace + dependency (chat gpt-5.4, execute_tool, invoke_agent)
+- `responsesapi`: `invoke_agent it-helpdesk-triage:4`, `invoke_agent it-helpdesk-incident:5`,
+  `chat gpt-5.4-2026-03-05` (x6), `execute_tool mcp_knowledge-base.knowledge_base_retrieve`,
+  `execute_tool mcp_servicenow-apim.createIncident`
+- `agentsv2`: request (the prompt-agent ingress)
+
+**Why:** The system was already correctly instrumented end-to-end; the fix was to
+prove it live and identify the transient warm-up as the cause rather than change
+working infra. Documented the `responsesapi` role-name attribution and the
+cross-boundary correlation limitation so future "missing traces" reports are
+triaged correctly (filter by span NAME `invoke_agent it-helpdesk-*`, not by
+`cloud_RoleName`, and allow a few minutes after any agent republish).
+
+### 2026-07-09: Triage Prompt Agent moved to gpt-5.4-mini (orchestrator + incident stay on gpt-5.4)
+**By:** Trinity
+**What:** Pointed ONLY the triage Prompt Agent at the new `gpt-5.4-mini`
+deployment (provisioned by Tank, exposed via azd env
+`AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT=gpt-5.4-mini`). The hosted orchestrator and
+the incident Prompt Agent remain on the main `gpt-5.4` deployment.
+
+**Code changes:**
+- `src/helpdesk/shared/config.py`: added `Settings.triage_chat_deployment`,
+  loaded from `AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT`, falling back to
+  `chat_deployment` when unset (mirrors how `chat_deployment` is loaded), so
+  environments that only provision the main deployment keep working.
+- `src/helpdesk/agents/setup.py`: `create_foundry_agents(...)` takes a new
+  optional `triage_chat_deployment: str | None = None` kwarg. It passes
+  `triage_chat_deployment or chat_deployment` as `chat_deployment` into
+  `build_triage_definition(...)` ONLY. `build_incident_definition(...)` keeps the
+  main `chat_deployment`. Added a `[setup]` log line surfacing both models.
+- `scripts/postprovision.py`: `create_foundry_agents()` now reads
+  `AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT` (optional) and forwards it, so `azd up`
+  reproduces triage-on-mini idempotently.
+- Tests: added `tests/test_config_settings.py` (3 cases: dedicated var set,
+  fallback to main, empty when nothing configured) and two cases in
+  `tests/test_foundry_agents_setup.py`
+  (`test_triage_uses_its_own_deployment_incident_stays_on_main`,
+  `test_triage_deployment_falls_back_to_main_when_unset`). `ruff check .` clean;
+  `pytest` green.
+
+**Live republish:** republished the triage Prompt Agent via
+`AIProjectClient.agents.create_version(agent_name="it-helpdesk-triage", ...)`
+using `build_triage_definition(chat_deployment="gpt-5.4-mini", ...)` — published
+**triage v5**, `model=gpt-5.4-mini`. Orchestrator stays v5 (hosted, gpt-5.4),
+incident stays v5 (prompt, gpt-5.4).
+
+**LIVE KQL evidence** (App Insights `appi-ztk6zx5aedqtc`,
+`dependencies` where `cloud_RoleName=='responsesapi'`, `gen_ai.request.model`):
+- `invoke_agent it-helpdesk-triage:5`  -> `gpt-5.4-mini-2026-03-17`
+- `chat gpt-5.4-mini-2026-03-17`       -> `gpt-5.4-mini-2026-03-17`
+- `execute_tool mcp_knowledge-base.knowledge_base_retrieve` (triage/KB path)
+- `invoke_agent it-helpdesk-incident:5` -> `gpt-5.4-2026-03-05` (still gpt-5.4)
+- `it-helpdesk-orchestrator` `chat` span -> `gpt-5.4` (still gpt-5.4)
+
+Direct triage-on-mini call grounded correctly on the KB (returned cited steps),
+confirming the smaller model still uses the `knowledge_base_retrieve` MCP tool.
+
+**Why:** Triage is the high-volume, first-hop deflection agent; running it on the
+cheaper/faster `gpt-5.4-mini` cuts cost/latency for the common path while keeping
+the orchestrator's routing brain and the incident agent's ServiceNow writes on
+the full `gpt-5.4`. The fallback keeps non-mini environments safe.
+
+### 2026-07-09: Orchestrator handoff-event contract for the UI (Switch consumes this)
+**By:** Trinity
+**What:** The exact stream contract Switch must implement to render "Calling
+Orchestrator / Triage Agent / Incident Agent" as the hosted orchestrator hands
+off. **No orchestrator code change was required** — the outer Responses stream
+already surfaces the orchestrator's internal tool calls as first-class events.
+
+---
+
+## TL;DR
+
+When the UI calls `client.responses.create(..., stream=True)` against the hosted
+`it-helpdesk-orchestrator` agent, the tool/function calls the orchestrator makes
+to its two sub-agents ARE visible in the outer stream as
+`response.output_item.added` events whose `item.type == "function_call"` and
+whose `item.name` is the tool name. Switch maps that tool name to a label and
+emits a UI SSE `status` frame. This was captured live (not theory).
+
+## Where the sub-agent name appears (live-verified event shapes)
+
+Primary signal (earliest — fires the moment the orchestrator decides to call a tool):
+
+```
+event.type == "response.output_item.added"
+event.item.type == "function_call"
+event.item.name  == "troubleshoot_from_knowledge_base" | "manage_servicenow_incident"
+event.item.id    == "<call id>"   # correlates added -> args.delta -> done
+```
+
+Secondary / fallback signal (fires after the tool arguments finish streaming):
+
+```
+event.type == "response.function_call_arguments.done"
+event.name       == "<same tool name>"
+event.item_id    == "<same call id>"
+event.arguments  == "<json string of tool args>"   # usually the underlying user problem
+```
+
+Between those two, `response.function_call_arguments.delta` events stream the
+JSON arguments token-by-token (`event.delta`, `event.item_id`). Switch does NOT
+need these for the label; ignore them for status rendering.
+
+## Tool -> label mapping
+
+| Signal                                    | UI status label          |
+|-------------------------------------------|--------------------------|
+| stream start (`response.created`)          | `Calling Orchestrator`   |
+| function_call `troubleshoot_from_knowledge_base` | `Calling Triage Agent`   |
+| function_call `manage_servicenow_incident` | `Calling Incident Agent` |
+
+## Parsing rules for Switch
+
+1. **On `response.created`** (first event of every stream): emit
+   `status = "Calling Orchestrator"`. (`response.in_progress` follows; ignore it —
+   don't double-emit.)
+2. **On `response.output_item.added` where `item.type == "function_call"`**: read
+   `item.name`, map via the table, emit the corresponding `status` frame. This is
+   the authoritative, earliest handoff signal — use this one.
+3. **Fallback** (only if `item.name` is ever absent on `added` in a future SDK/
+   server version): use `response.function_call_arguments.done.name`. In the live
+   capture BOTH carried the name, so `added` is sufficient today.
+4. **Token text** continues to ride `response.output_text.delta` (`event.delta`)
+   exactly as today — unchanged. The user-visible answer text is NOT affected by
+   these status frames; status is a separate, out-of-band signal.
+5. **A single stream can emit multiple handoffs** across turns and even within a
+   turn (e.g. deflect turn -> triage; later confirm turn -> incident). Emit one
+   status frame per `function_call` `added` event; render the latest as the
+   active indicator and clear it when the first `response.output_text.delta`
+   with visible text arrives (the orchestrator has started relaying the answer).
+6. **Unknown `item.name`**: ignore (future-proofing) — don't emit a bogus label.
+7. **End**: on `response.completed`, clear any lingering status indicator.
+
+## Suggested UI SSE `status` frame (Switch owns final shape)
+
+Mirroring the existing token/done/error frame protocol on `POST /api/chat/stream`:
+
+```
+data: {"type":"status","label":"Calling Triage Agent","tool":"troubleshoot_from_knowledge_base"}\n\n
+```
+
+## Live evidence (event-type counts + tool names, captured 2026-07-09 ~09:00Z)
+
+Deflect-first turn ("my laptop battery drains very fast…"), streamed from the
+hosted orchestrator:
+
+```
+  1  response.created
+  1  response.in_progress
+  3  response.output_item.added        <- one is item.type=function_call,
+ 17  response.function_call_arguments.delta   name=troubleshoot_from_knowledge_base
+  1  response.function_call_arguments.done
+  3  response.output_item.done
+  1  response.content_part.added
+119  response.output_text.delta        <- the relayed answer text
+  1  response.output_text.done
+  1  response.content_part.done
+  1  response.completed
+```
+
+Two-turn create-ticket flow (streamed), function_call item names observed:
+
+```
+TURN1 (new problem)   -> added.item.name = troubleshoot_from_knowledge_base ; args.done.name = troubleshoot_from_knowledge_base
+TURN2 (confirm ticket)-> added.item.name = manage_servicenow_incident       ; args.done.name = manage_servicenow_incident
+```
+
+**Why:** The UI must show which sub-agent the orchestrator is calling. Because the
+hosted MAF orchestrator runs its tools inside the container, the concern was that
+handoffs would be invisible to the outer Responses stream. A live stream dump
+proved the opposite: Foundry surfaces each tool invocation as a `function_call`
+output item with the tool name, so the UI can render handoff status purely from
+the existing stream — no orchestrator rebuild, no marker injected into the token
+text (which would risk corrupting the user-visible answer). Switch implements the
+SSE `status` frame + rendering from this contract.
+
+### 2026-07-09: Agent handoff status chips in the chat UI (SSE `status` frame)
+
+**By:** Switch
+
+**What:** Added a new out-of-band SSE frame `{"type":"status","label":...,"tool":...}`
+to `POST /api/chat/stream` that surfaces the orchestrator's handoffs in the chat UI
+as "Calling Orchestrator" → "Calling Triage Agent" / "Calling Incident Agent".
+
+- **Live path** (`_live_stream`): derives status purely from the existing hosted
+  orchestrator Responses stream — `response.created` → "Calling Orchestrator";
+  `response.output_item.added` with `item.type == "function_call"` maps `item.name`
+  (`troubleshoot_from_knowledge_base` → Triage, `manage_servicenow_incident` →
+  Incident). `response.function_call_arguments.done` is a de-duplicated fallback
+  (keyed on call id) used only if `item.name` is absent on `added`. Unknown tool
+  names are ignored. No orchestrator or agent code changed (per Trinity's contract).
+- **Mock path** (`_mock_stream`): synthesises the same sequence deterministically
+  from the mock orchestrator's `route` (triage/incident) so local dev + tests
+  exercise the feature offline.
+- **Frontend** (`index.html`): renders the latest `status` label as a pulsing chip
+  above the reply bubble; clears it on the first visible `token` and on `done`/`error`.
+  Non-streaming `/api/chat` fallback is unaffected — chips are a streaming-only
+  enhancement that degrades gracefully.
+
+**Why:** The UI needed to show which sub-agent the orchestrator is handing off to.
+Trinity's live capture proved these signals already exist in the outer Responses
+stream, so this is a pure UI + SSE change with no risk to the orchestrator or the
+user-visible answer text. Live-verified on app-ztk6zx5aedqtc: a new-problem turn
+emits Orchestrator→Triage; a confirm-ticket turn emits Orchestrator→Incident
+(created INC0010051).
+
+
 ### 2026-07-09: gpt-5.5 model migration BLOCKED on zero subscription quota (swedencentral)
 
 **By:** Tank

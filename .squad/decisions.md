@@ -2,6 +2,69 @@
 
 ## Active Decisions
 
+### 2026-07-09: KB deflection regression fixed — orchestrator now invokes each sub-agent with its OWN model (triage stays on gpt-5.4-mini)
+**By:** Trinity
+**What:** Fixed the live bug where the triage agent stopped returning knowledge-base
+steps ("I wasn't able to retrieve the knowledge base steps just now"). Root cause
+was NOT a gpt-5.4-mini capability regression, NOT a broken KB/index/MCP — it was a
+CODE bug in the hosted orchestrator surfaced by the triage→gpt-5.4-mini switch.
+
+**Root cause (live KQL + repro evidence):**
+- Reproduced the exact UI turn ("laptop is slow. file a ticket") against the hosted
+  orchestrator. The orchestrator DID call `troubleshoot_from_knowledge_base`, but the
+  tool returned `Error: Function failed.` and the LLM apologized.
+- App Insights `appi-ztk6zx5aedqtc`: `execute_tool troubleshoot_from_knowledge_base`
+  (cloud_RoleName `it-helpdesk-orchestrator`) span **success=False**, while
+  `execute_tool manage_servicenow_incident` was **success=True**. The orchestrator
+  `exceptions` table logged the exact cause:
+  `openai.BadRequestError: 400 invalid_payload — "Model must match the agent's model
+  'gpt-5.4-mini' when agent is specified." param='model'`.
+- Direct triage Prompt Agent call on gpt-5.4-mini worked perfectly (called
+  `knowledge_base_retrieve`, retrieved 5 docs, cited sources, deflected) — proving the
+  mini model, the KB, the AI Search index, and the MCP connection are all healthy.
+- The bug: `src/orchestrator/main.py._call_prompt_agent` passed the orchestrator's OWN
+  `MODEL` (gpt-5.4) for EVERY `agent_reference` Responses call. Foundry requires the
+  `model` param to equal the referenced agent's own deployment. Incident stayed on
+  gpt-5.4 (matched → worked); triage moved to gpt-5.4-mini (mismatch → 400 → KB
+  deflection broke).
+
+**Fix (orchestrator code layer — kept triage on gpt-5.4-mini):**
+- `src/orchestrator/main.py`: added `TRIAGE_MODEL` (from `TRIAGE_MODEL_DEPLOYMENT_NAME`
+  / `AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT`, falling back to `MODEL`) and a
+  `_MODEL_BY_AGENT` map. `_call_prompt_agent` now resolves the model per sub-agent so
+  triage is invoked with gpt-5.4-mini and incident with gpt-5.4.
+- `src/helpdesk/agents/setup.py`: `create_hosted_orchestrator(...)` takes a new
+  `triage_chat_deployment` kwarg and injects `TRIAGE_MODEL_DEPLOYMENT_NAME` into the
+  hosted container env (non-reserved key). Falls back to the main deployment when unset.
+- `scripts/postprovision.py`: forwards `AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT` so `azd up`
+  reproduces the fix idempotently.
+- Tests: `tests/test_orchestrator_hosted.py` gains a regression test proving
+  `_call_prompt_agent` passes each agent's own model; `tests/test_hosted_orchestrator_setup.py`
+  asserts `TRIAGE_MODEL_DEPLOYMENT_NAME` is injected (default + dedicated-mini cases).
+  `ruff check .` clean; full `pytest` green (98 passed).
+
+**Live republish + verification:**
+- Rebuilt the orchestrator image via `az acr build`
+  (`acrztk6zx5aedqtc.azurecr.io/it-helpdesk-orchestrator:kbfix-20260709101920`) and
+  re-registered the hosted agent via `AIProjectClient.agents.create_version` →
+  **orchestrator v6**. Triage stays **v5 / gpt-5.4-mini**; incident stays v5 / gpt-5.4.
+- Re-ran the live "laptop is slow. file a ticket" turn: orchestrator now returns the
+  actual numbered KB steps + "Recommended assignment group: Desktop Support",
+  deflect-first, no premature ticket. KQL: `execute_tool troubleshoot_from_knowledge_base`
+  = **success=True**, `invoke_agent it-helpdesk-triage:5` = **True**,
+  `execute_tool mcp_knowledge-base.knowledge_base_retrieve` = **True**.
+
+**Recommendation for abKrazy:** No revert needed — gpt-5.4-mini is fully reliable for
+the triage KB tool-calling workload (it calls `knowledge_base_retrieve` and relays cited
+steps correctly). The cost/latency win of running triage on gpt-5.4-mini is preserved.
+The general lesson: whenever a sub-agent's deployment diverges from the orchestrator's,
+the orchestrator must invoke it with that agent's own model — now handled generically.
+
+**Why:** Restores KB deflection (the core "resolve before ticketing" behavior) without
+sacrificing the deliberate cost optimization, and hardens the orchestrator against any
+future per-agent model divergence.
+
+
 ### 2026-07-09: Triage traces + orchestrator traces diagnosed live — config already correct, no code/infra change
 **By:** Trinity
 **What:** Investigated the report that "triage + orchestrator agents are not

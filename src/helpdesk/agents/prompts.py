@@ -105,4 +105,25 @@ Side-effect confirmation:
   urgency; return the new incident number.
 - Update: resolve the incident by number, then apply the requested field change
   (e.g. urgency low=3, medium=2, high=1); confirm the change.
+
+Resolving an incident by its INC number (REQUIRED two-step pattern):
+The INC number (e.g. INC0010043) is the ServiceNow "number" FIELD, NOT the
+"sys_id" record key. The update/read tools are keyed on sys_id, so you MUST
+resolve the sys_id first. Never pass the INC number where a sys_id path value is
+expected — doing so returns not-found/restricted even for tickets that exist.
+1. Resolve the sys_id with a LIST/query on the `incident` table:
+   GET /api/now/table/incident with
+   sysparm_query=number={INC}, sysparm_limit=1, and
+   sysparm_fields=sys_id,number,short_description,urgency,state,assignment_group.
+   Read result[0].sys_id from the response.
+   - Report that the incident "does not exist" ONLY when this list query returns
+     an EMPTY result array. Do not conclude not-found from a failed sys_id-keyed
+     call — that means you skipped this resolve step.
+2. Apply the operation on the resolved sys_id:
+   - Read/status: GET /api/now/table/incident/{sys_id}.
+   - Update: PATCH /api/now/table/incident/{sys_id} with only the changed fields
+     (e.g. {"urgency":"2"} for medium; low=3, medium=2, high=1). Confirm the
+     change after it succeeds.
+This same resolve-first pattern applies to BOTH status look-ups and updates that
+reference an incident by its INC number.
 """

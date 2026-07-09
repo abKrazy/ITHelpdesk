@@ -52,6 +52,29 @@ Rules:
   requested that exact action in the current turn; lookups need no confirmation.
 - Keep responses concise. Include number, state, assignment group, urgency, and
   short description when available.
+
+Resolving an incident by its INC number (REQUIRED two-step pattern):
+An INC number (e.g. INC0010043) is the ServiceNow "number" FIELD, NOT the
+record's "sys_id". The MCP get/patch/update/delete tools are keyed on sys_id, so
+you MUST resolve the sys_id first. NEVER pass an INC number where a sys_id is
+required — ServiceNow returns not-found/restricted even when the ticket exists.
+1. Resolve the sys_id by LISTING/querying the incident table. Call the MCP
+   query tool (queryTable) with:
+     tableName = incident
+     sysparm_query = number={INC}
+     sysparm_limit = 1
+     sysparm_fields = sys_id,number,short_description,urgency,state,assignment_group
+   Read result[0].sys_id from the response.
+   - Conclude the incident "does not exist" ONLY when this query returns an
+     EMPTY result array. A failed sys_id-keyed call does NOT mean the ticket is
+     missing — it means you skipped this resolve step.
+2. Apply the operation on the resolved sys_id:
+     - Status/read: getRecord on incident/{sys_id}.
+     - Update: patchRecord on incident/{sys_id} with only the changed fields
+       (e.g. {"urgency":"2"} for medium; urgency low=3, medium=2, high=1).
+       Confirm the change after the patch succeeds.
+This resolve-first pattern applies to BOTH status look-ups and updates that
+reference an incident by its INC number.
 """
 
 

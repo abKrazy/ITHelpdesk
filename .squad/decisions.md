@@ -541,3 +541,25 @@ Authoritative sources:
 **By:** Trinity
 **What:** Live Azure AI Search triage confidence now uses `@search.rerankerScore` with a 2.0 threshold when semantic ranking is available, while mock/local search keeps the existing normalized keyword score threshold of 0.25. Search indexing also carries each article's full `resolution_steps` on every chunk so deflection shows clean steps regardless of which chunk matched.
 **Why:** Hybrid vector+keyword `@search.score` is an RRF ordering score around 0.01-0.03, so it cannot safely drive the live confidence gate calibrated for local 0-1 scores. Semantic reranker scores are on a 0-4 scale and are query-comparable enough for the deflection gate, with the local fallback preserving mock behavior.
+
+## 2026-07-08 Phase 1 — Native Foundry Prompt Agents
+
+### 2026-07-08T19:19:33-05:00: Phase 1 native Foundry infrastructure and RBAC
+**By:** Tank
+**What:** Phase 1 infrastructure now provisions the native Foundry tool substrate: Basic ACR with admin disabled and `AcrPull` for the Foundry project managed identity; App Insights/Log Analytics; APIM MCP URL/key outputs; `AZURE_OPENAI_ENDPOINT`; Search system identity and data-plane/control-plane RBAC for app, Foundry project/account, user, and Search managed identities; and `Cognitive Services OpenAI User` for the Search identity so the integrated vectorizer can call Foundry OpenAI.
+**Why:** Fresh `azd up` deployments must reproduce the live working state without portal fixes. Native Prompt Agents, Azure AI Search grounding, integrated vectorization, and the Phase 2 hosted orchestrator all need deterministic resources, outputs, and managed-identity grants from Bicep.
+
+### 2026-07-08T19:19:33-05:00: Phase 1 native Prompt Agent tool wiring
+**By:** Trinity
+**What:** `create_foundry_agents(project_endpoint, chat_deployment, search_endpoint, apim_mcp_url, apim_key)` creates the native-tool Prompt Agents `it-helpdesk-triage` and `it-helpdesk-incident`; the orchestrator remains deferred to Phase 2 as a MAF Hosted Agent. Triage uses the native Azure AI Search Knowledge tool with the auto-provisioned `it-helpdesk-search-conn`, references existing project connections only, and relies on the integrated `text-embedding-3-large` vectorizer at 1536 dimensions for the KB index.
+**Why:** Deflection-first triage must be grounded by Foundry's native Azure AI Search tool and citations, not the previous deterministic reranker gate. Reusing Foundry-created connections avoids unsupported SDK connection creation paths and preserves the Phase 2 hosted-agent boundary.
+
+### 2026-07-08T19:19:33-05:00: Phase 1 native APIM MCP incident agent
+**By:** Switch
+**What:** The incident Prompt Agent uses the native Foundry `MCPTool` against APIM's locked MCP endpoint `${gateway}/servicenow/mcp` with inline `Ocp-Apim-Subscription-Key` headers. This connectionless header path supersedes the earlier Custom-Keys connection plan. Postprovision sources the APIM subscription key from the environment first and falls back to ARM `listSecrets` at runtime.
+**Why:** The installed `azure-ai-projects` connection surface cannot create/upsert the needed connection reliably, while inline MCP headers are the verified live path. Runtime ARM fallback keeps one-click provisioning resilient without persisting APIM keys in source.
+
+### 2026-07-08T19:19:33-05:00: Phase 1 live verification
+**By:** Tank, Switch, Trinity
+**What:** Phase 1 was verified live: Bicep compiles; triage performs deflection-first RAG with grounded citations; the incident MCP path returned real ServiceNow incident `INC0010036` through APIM -> ServiceNow; changes were committed as `3c7131b` and pushed to `abKrazy/ITHelpdesk`.
+**Why:** The team needed proof that the native Foundry Prompt Agent path, integrated-vectorizer search grounding, and connectionless APIM MCP incident flow work end-to-end before moving to Phase 2.

@@ -1,0 +1,10 @@
+# Runtime dependencies for the IT Helpdesk Orchestrator Foundry Hosted Agent.
+#
+# Microsoft Agent Framework is GA (1.x). The Foundry *hosting* adapter is still
+# Preview, so it is published only as a pre-release; the EXACT pinned version
+# below lets `pip install -r requirements.txt` resolve it without needing `--pre`.
+agent-framework==1.10.0
+agent-framework-foundry==1.10.0
+agent-framework-foundry-hosting==1.0.0a260630
+azure-ai-projects==2.3.0
+azure-identity>=1.19.0

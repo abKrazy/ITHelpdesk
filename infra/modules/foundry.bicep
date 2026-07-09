@@ -45,6 +45,12 @@ param principalId string = ''
 @description('Principal ID of the Azure AI Search service system-assigned managed identity.')
 param searchServicePrincipalId string
 
+@description('Azure AI Search endpoint for the native triage Knowledge Base tool connection.')
+param searchEndpoint string
+
+@description('Azure AI Search service resource ID (connection metadata).')
+param searchResourceId string
+
 // Role definition IDs (built-in).
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
@@ -130,10 +136,27 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   ]
 }
 
-// Project connections are intentionally NOT created in Bicep. The ARM contract
-// for CognitiveServices-based Foundry project connections is still preview and
-// unreliable for native tools. Switch/Trinity create AI Search, MCP Custom-Keys,
-// and telemetry connections data-plane in postprovision using the outputs below.
+// Project connections: the Azure AI Search connection backing the native triage
+// Knowledge Base tool is created control-plane here. azure-ai-projects 2.x has no
+// data-plane connection *create* API (only get/list/get_default), so postprovision
+// cannot create it — it only reads it back. AAD auth: the project + account
+// identities are granted Search data roles by search-rbac.bicep. MCP + telemetry
+// connections remain data-plane (the MCP tool passes its APIM key inline).
+resource searchConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = {
+  parent: aiProject
+  name: '${aiProjectName}-search'
+  properties: {
+    category: 'CognitiveSearch'
+    target: searchEndpoint
+    authType: 'AAD'
+    isSharedToAll: true
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: searchResourceId
+      Location: location
+    }
+  }
+}
 
 // Grant the runtime managed identity the roles needed to use the project + models.
 resource miAiDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -220,3 +243,4 @@ output projectName string = aiProject.name
 output projectPrincipalId string = aiProject.identity.principalId
 output projectEndpoint string = 'https://${toLower(aiFoundryName)}.services.ai.azure.com/api/projects/${aiProjectName}'
 output openAiEndpoint string = 'https://${toLower(aiFoundryName)}.openai.azure.com/'
+output searchConnectionName string = searchConnection.name

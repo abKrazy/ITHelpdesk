@@ -66,9 +66,24 @@ def upload_kb_docs() -> None:
     except Exception:
         pass  # already exists — idempotent
     container_client = service.get_container_client(container)
-    for doc in docs:
-        container_client.upload_blob(name=doc.name, data=doc.read_bytes(), overwrite=True)
-    print(f"[postprovision] uploaded {len(docs)} KB docs to {blob_endpoint}{container}")
+    try:
+        for doc in docs:
+            container_client.upload_blob(name=doc.name, data=doc.read_bytes(), overwrite=True)
+        print(f"[postprovision] uploaded {len(docs)} KB docs to {blob_endpoint}{container}")
+    except Exception as exc:  # noqa: BLE001 — archival copy is non-critical
+        # The archival blob copy is NOT on the RAG path: build_search_index()
+        # reads assets/kb locally and pushes chunks straight to AI Search, whose
+        # endpoint stays publicly reachable. Some governed subscriptions enforce
+        # an Azure Policy that forces storage publicNetworkAccess=Disabled, which
+        # blocks laptop-based blob uploads. Warn and continue so `azd up` still
+        # completes and the triage agent stays fully grounded.
+        print(
+            f"[postprovision] WARNING: KB blob upload skipped ({type(exc).__name__}: {exc}). "
+            "This is archival-only and does NOT affect AI Search grounding "
+            "(see build_search_index). Common cause: an Azure Policy disabling "
+            "storage public network access. Continuing.",
+            file=sys.stderr,
+        )
 
 
 def build_search_index() -> None:
@@ -169,11 +184,42 @@ def create_foundry_agents() -> None:
     )
 
 
+def create_hosted_orchestrator() -> None:
+    """STEP 4 — register the MAF orchestrator as a Foundry Hosted Agent.
+
+    The postprovision **shell** hook (postprovision.ps1/.sh) builds + pushes the
+    container image server-side with ``az acr build`` (no local Docker) and exports
+    ``ORCHESTRATOR_IMAGE``. We then register it via the Foundry SDK. Idempotent.
+    """
+    if _mock():
+        print("[postprovision] MOCK: would register the hosted orchestrator agent")
+        return
+
+    image = os.environ.get("ORCHESTRATOR_IMAGE", "").strip()
+    if not image:
+        print(
+            "[postprovision] ORCHESTRATOR_IMAGE not set; skipping hosted orchestrator "
+            "registration. The postprovision shell hook builds it via 'az acr build' "
+            "— re-run 'azd provision' so the hook can build + push the image.",
+            file=sys.stderr,
+        )
+        return
+
+    from helpdesk.agents.setup import create_hosted_orchestrator as _create
+
+    _create(
+        project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
+        chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
+        image=image,
+    )
+
+
 def main() -> None:
     print("[postprovision] starting")
     upload_kb_docs()
     build_search_index()
     create_foundry_agents()
+    create_hosted_orchestrator()
     print("[postprovision] done")
 
 

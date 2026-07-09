@@ -152,15 +152,46 @@ az provider register --namespace Microsoft.Search
 
 ### 5. Region availability caveats
 
+> **⚠️ The single most important choice.** The Orchestrator ships as a **Foundry
+> Hosted Agent (Preview)**, which is only available in a **narrow subset** of
+> regions — narrower than Prompt Agents or the base models. `infra/main.bicep`
+> therefore constrains `location` (via `@allowed`) to the regions that support
+> **all** required services. `azd up` will only let you pick from this list.
+
 Pick a region that supports **all** of:
 
-- **`gpt-4o` (GlobalStandard)** and **`text-embedding-3-large`** in Azure AI
-  Foundry — see [model region availability](https://learn.microsoft.com/azure/ai-services/openai/concepts/models).
-- **API Management Developer tier** — available in most regions but not every one;
-  see [products by region](https://azure.microsoft.com/global-infrastructure/services/).
+- **Foundry Hosted Agents (Preview)** — currently **East US 2, North Central US,
+  Sweden Central, West US, West US 3** only. This is the binding constraint. See
+  [Hosted Agents region availability](https://learn.microsoft.com/azure/foundry/agents/concepts/hosted-agents#region-availability).
+  (Plain **East US is _not_ supported** for Hosted Agents, even though it supports
+  Prompt Agents.)
+- **`gpt-4o` (GlobalStandard)** and **`text-embedding-3-large` (Standard)** in
+  Azure AI Foundry — see [model region availability](https://learn.microsoft.com/azure/ai-services/openai/concepts/models).
+  Note: some Hosted-Agents regions (e.g. North Central US, West US) do **not**
+  offer `text-embedding-3-large` on the **Standard** SKU — verify before choosing.
+- **Azure AI Search `basic` SKU** — capacity in the Hosted-Agents regions is
+  sometimes tight. If `azd up` fails with `ResourcesForSkuUnavailable` /
+  `InsufficientResourcesAvailable` on the Search service, simply **re-run
+  `azd up`** (it's idempotent and resumes) or pick another region from the list.
+- **API Management Developer tier** — available in all of the above.
 
-Well-tested choices: **East US 2**, **Sweden Central**. When in doubt, deploy AI
-Foundry and APIM in the same region to avoid cross-region latency.
+**Well-tested choices (both models + Hosted Agents + Search):** **Sweden Central**,
+**West US 3**, **East US 2**. Check model quota and Search capacity first:
+
+```bash
+az cognitiveservices usage list --location swedencentral \
+  --query "[?contains(name.value,'gpt-4o') || contains(name.value,'text-embedding-3-large')].{name:name.value,current:currentValue,limit:limit}" -o table
+```
+
+> **Governed / policy-locked subscriptions.** Some enterprise subscriptions enforce
+> an Azure Policy that forces Storage `publicNetworkAccess = Disabled`. The KB
+> **grounding path is unaffected** — `postprovision` embeds `assets/kb/*` and
+> pushes them straight to AI Search (whose endpoint stays public). The only thing
+> such a policy blocks is the optional **archival** copy of the raw docs to Blob
+> storage; `postprovision` logs a warning and continues, so `azd up` still
+> succeeds and the Triage agent stays fully grounded.
+
+When in doubt, deploy AI Foundry and APIM in the same region to avoid cross-region latency.
 
 ### 6. ServiceNow prerequisites
 

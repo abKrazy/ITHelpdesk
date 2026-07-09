@@ -27,7 +27,18 @@ targetScope = 'subscription'
 param environmentName string
 
 @minLength(1)
-@description('Primary Azure region for all resources. azd prompts for this (AZURE_LOCATION).')
+@allowed([
+  // Foundry **Hosted Agents** (the Phase-2 orchestrator) are only available in
+  // these regions. Picking anything else fails hosted-agent registration with
+  // "Unsupported region for Foundry Hosted Agents". Keep in sync with
+  // https://learn.microsoft.com/azure/foundry/agents/concepts/hosted-agents#region-availability
+  'eastus2'
+  'northcentralus'
+  'swedencentral'
+  'westus'
+  'westus3'
+])
+@description('Primary Azure region for all resources. azd prompts for this (AZURE_LOCATION). Restricted to Foundry Hosted Agents regions.')
 param location string
 
 @description('Object ID of the deploying user/principal. azd sets AZURE_PRINCIPAL_ID. Granted data-plane roles for local dev (Search/Storage/Foundry).')
@@ -178,11 +189,14 @@ module foundry './modules/foundry.bicep' = {
     chatModelName: chatModelName
     embeddingModelDeploymentName: embeddingModelDeploymentName
     embeddingModelName: embeddingModelName
-    // Native tool connections are created data-plane by postprovision.
+    // Native AI Search connection for the triage KB tool is created in the
+    // Foundry module (control-plane); MCP + telemetry stay data-plane.
     managedIdentityResourceId: identity.outputs.resourceId
     managedIdentityPrincipalId: identity.outputs.principalId
     principalId: principalId
     searchServicePrincipalId: search.outputs.principalId
+    searchEndpoint: search.outputs.endpoint
+    searchResourceId: search.outputs.resourceId
   }
 }
 
@@ -206,6 +220,7 @@ module acr './modules/acr.bicep' = {
     tags: tags
     acrName: '${abbrs.containerRegistryRegistries}${resourceToken}'
     foundryProjectPrincipalId: foundry.outputs.projectPrincipalId
+    principalId: principalId
   }
 }
 

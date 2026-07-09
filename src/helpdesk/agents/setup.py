@@ -13,6 +13,7 @@ importable in mock mode / CI where those libraries (and Azure itself) are absent
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from .embeddings import EMBEDDING_DIMENSIONS
@@ -287,3 +288,88 @@ def create_foundry_agents(
             _azd_env_set(_AGENT_ID_ENV[name], agent_id)
 
     return ids
+
+
+# ---------------------------------------------------------------------------
+# STEP 4 — Foundry **Hosted Agent** orchestrator (Microsoft Agent Framework)
+# ---------------------------------------------------------------------------
+_ORCHESTRATOR_NAME = "it-helpdesk-orchestrator"
+
+# The Foundry ingress protocol + version the ResponsesHostServer speaks. The
+# version string is a Foundry contract; override via env if the platform pins a
+# different one (discovered on first live deploy).
+_RESPONSES_PROTOCOL = "responses"
+_DEFAULT_RESPONSES_VERSION = "2.0.0"
+
+
+def create_hosted_orchestrator(
+    *,
+    project_endpoint: str,
+    chat_deployment: str,
+    image: str,
+    cpu: str = "1",
+    memory: str = "2Gi",
+    responses_version: str | None = None,
+) -> str:
+    """Register the MAF orchestrator container as a Foundry **Hosted Agent**.
+
+    The image is built + pushed server-side by the postprovision shell hook
+    (``az acr build`` — no local Docker) and passed in as ``image``. We register
+    it via the **public, stable** ``AIProjectClient.agents.create_version`` API
+    with a :class:`HostedAgentDefinition` using ``container_configuration`` (the
+    code-ZIP path in azure-ai-projects 2.3.0 is only a private method).
+
+    ``create_version`` is idempotent-friendly: re-running publishes a new version
+    of the same named agent. Foundry **reserves** and auto-injects all ``FOUNDRY_*``
+    and ``AGENT_*`` environment variables (including ``FOUNDRY_PROJECT_ENDPOINT``),
+    so we must NOT set them here — the registration API rejects reserved keys. We
+    only pass the non-reserved vars the container needs (the model deployment and
+    the sub-agent names).
+    """
+    from azure.ai.projects import AIProjectClient
+    from azure.ai.projects.models import (
+        ContainerConfiguration,
+        HostedAgentDefinition,
+        ProtocolVersionRecord,
+    )
+
+    from ..shared import get_credential
+
+    version = (
+        responses_version
+        or os.environ.get("FOUNDRY_RESPONSES_PROTOCOL_VERSION")
+        or _DEFAULT_RESPONSES_VERSION
+    )
+    # NOTE: FOUNDRY_* and AGENT_* are reserved for platform use and injected by
+    # Foundry at run time — passing them here fails registration with
+    # "invalid_payload ... reserved for platform use". main.py reads the
+    # platform-injected FOUNDRY_PROJECT_ENDPOINT for the project endpoint.
+    environment_variables = {
+        "AZURE_AI_MODEL_DEPLOYMENT_NAME": chat_deployment,
+        "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
+        "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
+    }
+    definition = HostedAgentDefinition(
+        cpu=cpu,
+        memory=memory,
+        environment_variables=environment_variables,
+        container_configuration=ContainerConfiguration(image=image),
+        protocol_versions=[
+            ProtocolVersionRecord(protocol=_RESPONSES_PROTOCOL, version=version)
+        ],
+    )
+
+    with AIProjectClient(endpoint=project_endpoint, credential=get_credential()) as project:
+        created = project.agents.create_version(
+            agent_name=_ORCHESTRATOR_NAME,
+            definition=definition,
+        )
+        agent_id = getattr(created, "name", None) or _ORCHESTRATOR_NAME
+        revision = getattr(created, "version", None)
+        _log(
+            f"registered hosted orchestrator '{_ORCHESTRATOR_NAME}' -> {agent_id} "
+            f"(v{revision}, image {image})"
+        )
+
+    _azd_env_set("AZURE_AI_ORCHESTRATOR_AGENT_ID", agent_id)
+    return agent_id

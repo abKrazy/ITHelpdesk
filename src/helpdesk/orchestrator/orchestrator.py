@@ -1,7 +1,11 @@
-"""Orchestrator routing logic (Microsoft Agent Framework, hosted-agent shape).
+"""Deterministic orchestrator — the **offline / mock** backend for the UI.
 
-The Orchestrator is the single entry point the UI invokes. It decides which
-specialist agent handles a request and relays the consolidated reply:
+In production the UI talks to the Microsoft Agent Framework **Foundry Hosted
+Agent** ``it-helpdesk-orchestrator`` (see ``src/orchestrator/main.py``), whose LLM
+decides routing and invokes the Triage + Incident Prompt Agents. This module is
+the deterministic stand-in used when ``HELPDESK_MOCK=1`` (CI, local smoke tests,
+offline dev) so the UI and the sample-prompt validation run without any live
+Azure dependency. It mirrors the hosted orchestrator's routing contract:
 
   * incident lookup  — "lookup details for incident INC0000057"        (§3.3)
   * triage -> create — "Unable to log into Epic. Create a new incident." (§3.2)

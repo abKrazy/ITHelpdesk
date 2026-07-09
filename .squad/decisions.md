@@ -2,6 +2,143 @@
 
 ## Active Decisions
 
+### 2026-07-09: Latency investigation — trace-driven per-agent breakdown + forward-request root cause (recommendations only, NO functional change)
+**By:** Trinity (AI / Agent Engineer)
+**Status:** Diagnostic complete. Live-measured against the hosted orchestrator v6 (gpt-5.4),
+triage v5 (gpt-5.4-mini), incident v5 (gpt-5.4). NO code/infra change made — every
+meaningful latency lever alters the routing brain's behavior and needs abKrazy sign-off + eval.
+
+---
+
+## (A) Measured end-to-end latency per turn (felt by the UI)
+
+Drove 3 live full flows through the hosted orchestrator exactly as the UI does
+(`get_openai_client(agent_name='it-helpdesk-orchestrator')` → `responses.create(stream=True)`),
+window **15:47:39–15:48:58Z 2026-07-09**:
+
+| Turn | Time-to-first-token | Total wall clock |
+|------|--------------------:|-----------------:|
+| 1 — KB deflect ("my laptop is running slow") | **22.08s** | **28.48s** |
+| 2 — Create ticket (confirm "file a ticket") → INC0010054 | **21.86s** | **27.59s** |
+| 3 — Status lookup ("status of INC0010054?") | **17.12s** | **22.61s** |
+
+The user is right: ~17–22s to first token, ~22–28s total. Very slow.
+
+## (B) Per-agent / per-stage breakdown (App Insights spans, same window)
+
+**Turn 1 — KB deflect** (`invoke_agent it-helpdesk-orchestrator` = 17.39s):
+| Stage | Span | Dur |
+|-------|------|----:|
+| **Orchestrator reasoning pass #1 (decide tool)** | `chat gpt-5.4` | **7.27s** |
+| Sub-agent handoff (triage) | `execute_tool troubleshoot_from_knowledge_base` | 3.28s |
+| └ triage agent | `responsesapi invoke_agent it-helpdesk-triage:5` | 2.66s |
+| &nbsp;&nbsp;└ KB retrieval (AI Search) | `mcp_knowledge-base.knowledge_base_retrieve` | 1.42s |
+| &nbsp;&nbsp;└ triage chat (**gpt-5.4-mini**) | `chat gpt-5.4-mini` | **0.42s** |
+| **Orchestrator reasoning pass #2 (relay verbatim)** | `chat gpt-5.4` | **6.83s** |
+| **DOMINANT** | orchestrator's TWO gpt-5.4 passes = **14.1s (81%)** | |
+
+**Turn 2 — Create ticket** (`invoke_agent it-helpdesk-orchestrator` = 21.27s):
+| Stage | Span | Dur |
+|-------|------|----:|
+| **Orchestrator reasoning pass #1** | `chat gpt-5.4` | **10.02s** |
+| Sub-agent handoff (incident) | `execute_tool manage_servicenow_incident` | 4.63s |
+| └ incident agent | `responsesapi invoke_agent it-helpdesk-incident:5` | 3.95s |
+| &nbsp;&nbsp;└ APIM→ServiceNow create | `mcp_servicenow-apim.createIncident` | 2.05s |
+| &nbsp;&nbsp;└ incident chat gpt-5.4 (×2) | `chat gpt-5.4` | 0.57s + 0.38s |
+| **Orchestrator reasoning pass #2 (relay)** | `chat gpt-5.4` | **6.61s** |
+| **DOMINANT** | orchestrator's two gpt-5.4 passes = **16.6s (78%)** | |
+
+**Turn 3 — Status lookup** (`invoke_agent it-helpdesk-orchestrator` = 16.57s):
+| Stage | Span | Dur |
+|-------|------|----:|
+| **Orchestrator reasoning pass #1** | `chat gpt-5.4` | **6.24s** |
+| Sub-agent handoff (incident) | `execute_tool manage_servicenow_incident` | 4.48s |
+| └ incident agent | `responsesapi invoke_agent it-helpdesk-incident:5` | 3.86s |
+| &nbsp;&nbsp;└ resolve sys_id | `mcp_servicenow-apim.queryTable` | 1.33s |
+| &nbsp;&nbsp;└ read record | `mcp_servicenow-apim.getRecord` | 1.40s |
+| &nbsp;&nbsp;└ incident chat gpt-5.4 | `chat gpt-5.4` | 0.30s |
+| **Orchestrator reasoning pass #2 (relay)** | `chat gpt-5.4` | **5.85s** |
+| **DOMINANT** | orchestrator's two gpt-5.4 passes = **12.1s (73%)** | |
+
+**Aggregate p50/max (3 turns):** `chat gpt-5.4` (orchestrator) **p50 6.61s / max 10.02s, TWO per turn**;
+incident `chat gpt-5.4` 0.38–0.57s; triage `chat gpt-5.4-mini` 0.42s; `knowledge_base_retrieve` 1.42s;
+`createIncident` 2.05s; `queryTable` 1.33s; `getRecord` 1.40s.
+
+### THE DOMINANT CONTRIBUTOR = orchestrator gpt-5.4 reasoning "thinking" time, spent TWICE per turn
+Token evidence (orchestrator `chat gpt-5.4` spans): **1360–1639 input tokens → only 29–147 output
+tokens, in 6–10s.** Producing ~40 tokens should take <1s; the 6–10s is gpt-5.4 reasoning-model
+hidden thinking on the large, rule-dense ~1500-token orchestrator prompt. Proof it's the *model
+mode + prompt*, not the model itself: the **identical gpt-5.4** as the incident sub-agent returns in
+**0.38–0.57s**, and **gpt-5.4-mini** (triage) in **0.42s** — 12–15× faster. The orchestrator pays this
+cost twice: once to decide which tool to call, and again to re-relay the sub-agent's output verbatim
+(the "double model round-trip"). Cold start adds ~6s on the FIRST turn only (turn 1 took 12.27s to
+`response.created` vs 6.2–6.5s steady state = hosted-container warm-up).
+
+## (C) "forward-request" error root cause + latency cost + owner
+
+**What they are:** APIM exceptions `ClientConnectionFailure at transfer-response` on operation
+`servicenow-mcp;rev=1 - getMcp` — **84 over 6h; 8 during my 3-turn window.** The `GET /servicenow/mcp`
+requests show `resultCode = 0 [not sent in full]`, success=False (42/42 fail over 6h).
+
+**Root cause:** MCP Streamable-HTTP transport. The Foundry MCP client opens `GET /servicenow/mcp`
+to establish the SSE **server→client downstream channel**, then tears it down as soon as it has the
+JSON-RPC reply from the `POST`. APIM logs that client-initiated close as `ClientConnectionFailure`
+at the `transfer-response` stage. It is a normal artifact of the MCP SSE channel lifecycle, not a
+backend failure — every actual tool call (`POST /servicenow/mcp`) succeeds (200/202).
+
+**A SEPARATE, unrelated error class:** `OperationNotFound at configuration` (60/6h) is **100% internet
+scanner noise** hitting the public gateway — `GET /`, `/favicon.ico`, Fortinet exploit probes
+(`/lang/custom/sbin/init`, `/remote/logincheck`, `/migadmin/...`). NONE is agent traffic.
+
+**Latency cost: ~0 (they do NOT contribute to slowness).** The failing GET SSE channel runs
+**concurrently** with the POST tool calls, which complete in <1ms–810ms. No retries, no backoff.
+Window evidence (turn 2): MCP `POST`s returned 200/202 in <1ms–810ms while the GET "failed" alongside
+at 55ms & 825ms — overlapping, never serial; the `createIncident` tool span succeeded first try (2.05s).
+
+**Owner: Tank (APIM / infra), for TRACE HYGIENE only — not Trinity, not a latency fix.**
+
+## (D) Prioritized recommendations (impact / effort / risk / owner)
+
+1. **Cut orchestrator gpt-5.4 reasoning time — THE #1 lever (~12–17s/turn).** Needs eval + sign-off:
+   - (a) **Lower the orchestrator's reasoning effort** (gpt-5.4 supports low/minimal; we already use
+     `KnowledgeRetrievalMinimalReasoningEffort` for KB retrieval — precedent exists).
+     Impact **HIGH** (each 6.6s pass → ~1–2s; ~8–12s/turn). Effort **LOW**. Risk **MEDIUM** (routing
+     quality — must re-run the 5-case deflect/create/status regression). **Owner: Trinity.**
+   - (b) **Move the orchestrator routing brain to gpt-5.4-mini** (proven 0.42s vs 6.61s). Impact
+     **HIGH**. Effort **LOW** (`create_version` + env). Risk **MEDIUM-HIGH** (deflect/routing judgment
+     on the brain). **Owner: Trinity (agent) + Tank (deploy).** Needs eval.
+   - (c) **Trim the ~1500-token orchestrator prompt.** Impact **LOW-MED**. Effort **MED**. Risk **MED**.
+     **Owner: Trinity.**
+2. **Eliminate the double model round-trip (the 2nd ~6.6s "relay" pass).** The orchestrator re-invokes
+   gpt-5.4 purely to paste the sub-agent output verbatim. Relay the sub-agent output straight through
+   (bypass the LLM for pure relay) or let the sub-agent's answer be terminal. Impact **HIGH**
+   (~6.6s/turn AND halves reasoning cost). Effort **MED-HIGH** (architectural — currently guaranteed by
+   the "RELAY VERBATIM" instruction). Risk **MEDIUM**. **Owner: Trinity + Morpheus (arch).** Sign-off.
+3. **First-turn cold start (~6s).** Warm-keep the hosted orchestrator + prompt-agent containers
+   (min-replica / keep-alive ping). Impact **LOW-MED** (first turn only). Effort **LOW**. Risk **LOW**.
+   **Owner: Tank.**
+4. **Fix forward-request/getMcp SSE noise — trace hygiene, ~0 latency.** Handle the client SSE close
+   gracefully / drop the unused GET SSE channel if the Foundry client only needs POST. Impact **~0
+   latency** (cleaner traces, fewer false alarms). Effort **LOW**. Risk **LOW**. **Owner: Tank.**
+5. **Perceived latency / first token.** Handoff status frames already stream ("Calling Triage/Incident
+   Agent"). Consider surfacing the sub-agent's raw steps to the user the moment they return, instead of
+   waiting for the 2nd orchestrator pass (ties to #2). Impact **MED** (perceived). Effort **MED**.
+   **Owner: Switch (UI) + Trinity.**
+6. **NOT worth optimizing now:** KB retrieval (1.42s — already extractive + minimal-effort) and the
+   APIM MCP path (2.0s create / 1.3+1.4s query+get). **APIM developer tier is NOT the bottleneck** —
+   MCP POSTs return in <1ms–810ms. No tier change needed for latency.
+
+## (E) Quick win implemented?
+**No functional changes made — recommendations only.** There is no zero-risk quick win: the KB is
+already minimal-effort/extractive, there is NO misconfigured reasoning-effort/timeout to safely flip
+(the orchestrator runs gpt-5.4 at its default effort with no override), and the forward-request errors
+cost ~0 latency. Every real lever (reasoning effort, mini for the brain, removing the relay pass) changes
+the routing brain's behavior and requires abKrazy sign-off + a fresh eval before shipping.
+
+**Recommended first step for abKrazy to approve:** 1(a) lower the orchestrator's reasoning effort — the
+single highest impact-to-risk move (~8–12s/turn) — gated behind a re-run of the 5-case regression.
+
+
 ### 2026-07-09: KB deflection regression fixed — orchestrator now invokes each sub-agent with its OWN model (triage stays on gpt-5.4-mini)
 **By:** Trinity
 **What:** Fixed the live bug where the triage agent stopped returning knowledge-base

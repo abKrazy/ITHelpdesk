@@ -124,6 +124,8 @@ def test_create_hosted_orchestrator_registers_container_agent(
     assert env["TRIAGE_AGENT_NAME"] == "it-helpdesk-triage"
     assert env["INCIDENT_AGENT_NAME"] == "it-helpdesk-incident"
     assert env["AZURE_AI_MODEL_DEPLOYMENT_NAME"] == "gpt-5.4"
+    # Triage model defaults to the main deployment when no dedicated one is given.
+    assert env["TRIAGE_MODEL_DEPLOYMENT_NAME"] == "gpt-5.4"
     # FOUNDRY_*, AGENT_*, and APPLICATIONINSIGHTS_CONNECTION_STRING are reserved for
     # platform use and auto-injected by Foundry Hosted Agents — passing them in
     # create_version fails with "reserved for platform use", so they MUST NOT be in
@@ -136,6 +138,34 @@ def test_create_hosted_orchestrator_registers_container_agent(
     assert env["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "true"
 
     assert persisted["AZURE_AI_ORCHESTRATOR_AGENT_ID"] == "it-helpdesk-orchestrator"
+
+
+def test_create_hosted_orchestrator_injects_dedicated_triage_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When triage runs on its own deployment (e.g. gpt-5.4-mini), the container
+    must receive TRIAGE_MODEL_DEPLOYMENT_NAME so main.py invokes the triage
+    agent_reference with the matching model (Foundry rejects a mismatch)."""
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-5.4",
+        triage_chat_deployment="gpt-5.4-mini",
+        image="acr/it-helpdesk-orchestrator:latest",
+    )
+
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0][
+        "definition"
+    ].environment_variables
+    # Orchestrator + incident stay on the main deployment; triage gets the mini.
+    assert env["AZURE_AI_MODEL_DEPLOYMENT_NAME"] == "gpt-5.4"
+    assert env["TRIAGE_MODEL_DEPLOYMENT_NAME"] == "gpt-5.4-mini"
+    # TRIAGE_* is not a reserved (FOUNDRY_*/AGENT_*) platform key.
+    assert not any(k.startswith(("FOUNDRY_", "AGENT_")) for k in env)
 
 
 def test_create_hosted_orchestrator_honours_protocol_version_override(

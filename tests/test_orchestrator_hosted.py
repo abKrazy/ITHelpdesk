@@ -60,6 +60,46 @@ def test_tools_route_to_correct_prompt_agents(orchestrator_main, monkeypatch) ->
     ]
 
 
+def test_call_prompt_agent_uses_each_agents_own_model(orchestrator_main, monkeypatch) -> None:
+    """Regression: invoking a Prompt Agent by agent_reference MUST pass that
+    agent's own deployment. The Foundry Responses API rejects a mismatch with
+    400 ("Model must match the agent's model ... when agent is specified"), which
+    is what broke KB deflection when triage moved to gpt-5.4-mini while the
+    orchestrator kept passing its own gpt-5.4 model for every sub-agent call.
+    """
+    captured: list[dict] = []
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            captured.append(kwargs)
+            from types import SimpleNamespace
+
+            return SimpleNamespace(output_text="ok", output=None)
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    monkeypatch.setattr(orchestrator_main, "_get_openai_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        orchestrator_main,
+        "_MODEL_BY_AGENT",
+        {"it-helpdesk-triage": "gpt-5.4-mini", "it-helpdesk-incident": "gpt-5.4"},
+    )
+
+    orchestrator_main._call_prompt_agent("it-helpdesk-triage", "laptop slow")
+    orchestrator_main._call_prompt_agent("it-helpdesk-incident", "status of INC0010036")
+
+    # Triage invoked with its own (mini) model; incident with the main model.
+    assert captured[0]["model"] == "gpt-5.4-mini"
+    assert (
+        captured[0]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-triage"
+    )
+    assert captured[1]["model"] == "gpt-5.4"
+    assert (
+        captured[1]["extra_body"]["agent_reference"]["name"] == "it-helpdesk-incident"
+    )
+
+
 def test_instructions_encode_routing_rules(orchestrator_main) -> None:
     instructions = orchestrator_main.ORCHESTRATOR_INSTRUCTIONS
     # Intent classification runs before deflect-first.

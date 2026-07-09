@@ -42,6 +42,18 @@ MODEL = (
     or os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT")
     or "gpt-5.4"
 )
+# The triage Prompt Agent may run on its OWN (typically smaller/cheaper) chat
+# deployment — e.g. gpt-5.4-mini — while the orchestrator + incident agent stay
+# on the main deployment. When invoking a Prompt Agent by ``agent_reference``,
+# the Foundry Responses API REQUIRES the ``model`` we pass to equal that agent's
+# own deployment ("Model must match the agent's model '<x>' when agent is
+# specified"). So triage must be invoked with TRIAGE_MODEL, not MODEL. Falls back
+# to MODEL when triage shares the orchestrator's deployment (nothing to override).
+TRIAGE_MODEL = (
+    os.environ.get("TRIAGE_MODEL_DEPLOYMENT_NAME")
+    or os.environ.get("AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT")
+    or MODEL
+)
 TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")
 PORT = int(os.environ.get("PORT", "8088"))
@@ -258,6 +270,15 @@ _TOOL_BY_AGENT = {
     INCIDENT_AGENT_NAME: "manage_servicenow_incident",
 }
 
+# Maps a sub-agent name to the chat deployment it is published on. An
+# ``agent_reference`` Responses call MUST pass the referenced agent's own model,
+# so this is the source of truth for the ``model`` param per sub-agent. Triage
+# may run on a cheaper deployment (e.g. gpt-5.4-mini); incident stays on MODEL.
+_MODEL_BY_AGENT = {
+    TRIAGE_AGENT_NAME: TRIAGE_MODEL,
+    INCIDENT_AGENT_NAME: MODEL,
+}
+
 
 def _get_openai_client():
     """Lazily build (and cache) an OpenAI client bound to the Foundry project.
@@ -296,10 +317,18 @@ def _extract_output_text(resp) -> str:
 
 
 def _call_prompt_agent(agent_name: str, message: str) -> str:
-    """Do the raw Responses call to a Foundry Prompt Agent by *agent reference*."""
+    """Do the raw Responses call to a Foundry Prompt Agent by *agent reference*.
+
+    The ``model`` MUST equal the referenced agent's own deployment — the Foundry
+    Responses API rejects a mismatch with 400 ``invalid_payload`` ("Model must
+    match the agent's model '<x>' when agent is specified"). Because a sub-agent
+    can run on a different deployment than the orchestrator (e.g. triage on
+    gpt-5.4-mini), resolve the model per agent instead of always passing MODEL.
+    """
     client = _get_openai_client()
+    model = _MODEL_BY_AGENT.get(agent_name, MODEL)
     resp = client.responses.create(
-        model=MODEL,
+        model=model,
         input=message,
         extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
     )

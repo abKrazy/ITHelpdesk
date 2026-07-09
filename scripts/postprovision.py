@@ -159,6 +159,14 @@ def create_hosted_orchestrator() -> None:
     _create(
         project_endpoint=env("AZURE_AI_PROJECT_ENDPOINT"),
         chat_deployment=env("AZURE_OPENAI_CHAT_DEPLOYMENT"),
+        # Triage runs on its own (smaller/cheaper) deployment when provisioned;
+        # the orchestrator container must invoke the triage agent_reference with
+        # THAT model (Foundry requires model == the agent's model). Falls back to
+        # the main chat deployment inside setup when unset.
+        triage_chat_deployment=env(
+            "AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", required=False, default=None
+        )
+        or None,
         image=image,
     )
 

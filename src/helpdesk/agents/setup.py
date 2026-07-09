@@ -340,6 +340,7 @@ def create_hosted_orchestrator(
     project_endpoint: str,
     chat_deployment: str,
     image: str,
+    triage_chat_deployment: str | None = None,
     cpu: str = "1",
     memory: str = "2Gi",
     responses_version: str | None = None,
@@ -359,8 +360,10 @@ def create_hosted_orchestrator(
     (from the project's default AppInsights connection) — so we must NOT set them
     here; the registration API rejects reserved keys with "reserved for platform
     use". We only pass the non-reserved vars the container needs: the model
-    deployment, the sub-agent names, and the OTEL/GenAI tracing knobs (cloud role
-    name + content-recording toggle) that ``main.py``'s telemetry setup reads.
+    deployment, the triage sub-agent's own model deployment (which may differ,
+    e.g. gpt-5.4-mini — the orchestrator must invoke triage with its model), the
+    sub-agent names, and the OTEL/GenAI tracing knobs (cloud role name +
+    content-recording toggle) that ``main.py``'s telemetry setup reads.
     ``main.py`` resolves the App Insights connection string from the injected env
     var (or the project's AppInsights connection as a runtime fallback).
     """
@@ -388,6 +391,12 @@ def create_hosted_orchestrator(
     # orchestrator tags and records its traces correctly.
     environment_variables = {
         "AZURE_AI_MODEL_DEPLOYMENT_NAME": chat_deployment,
+        # The triage sub-agent may be published on its own (smaller/cheaper)
+        # deployment (e.g. gpt-5.4-mini). main.py MUST invoke the triage
+        # agent_reference with THIS model — Foundry rejects a mismatch between the
+        # passed model and the referenced agent's own model with 400
+        # invalid_payload. Falls back to the main deployment when triage shares it.
+        "TRIAGE_MODEL_DEPLOYMENT_NAME": triage_chat_deployment or chat_deployment,
         "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
         "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
         "OTEL_SERVICE_NAME": _ORCHESTRATOR_NAME,

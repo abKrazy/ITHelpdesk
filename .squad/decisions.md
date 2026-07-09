@@ -840,3 +840,49 @@ incremental token frames for "my laptop is running slow", and confirmed the
 deployed App Service (`app-ztk6zx5aedqtc.azurewebsites.net`) streams end-to-end.
 UI-only change; no orchestrator/triage/incident agent or infra changes.
 
+
+---
+
+### 2026-07-09: Orchestrator classifies intent FIRST — status/lookup/update skips triage/KB
+
+**By:** Trinity
+
+**What:** Added a `CLASSIFY INTENT FIRST` section as the leading rule in
+`ORCHESTRATOR_INSTRUCTIONS` (`src/orchestrator/main.py`, hosted MAF agent) and
+aligned `src/helpdesk/agents/prompts.py` `ORCHESTRATOR_INSTRUCTIONS` (mock +
+reference path). The orchestrator now routes on user intent before anything else:
+(A) a NEW technical problem / "how do I…" / symptom report (including "open a
+ticket for this new problem") follows the unchanged DEFLECT FIRST flow —
+`troubleshoot_from_knowledge_base` first, steps pasted verbatim, then offer a
+ticket; (B) any ticket status / lookup / priority / urgency / assignment-group
+question or field update, or any reference to an existing INC number for a
+read/update, goes straight to `manage_servicenow_incident` ONLY and NEVER calls
+the knowledge base. DEFLECT FIRST is now explicitly scoped to intent (A). Concrete
+(B) examples that must skip triage are baked into the prompt. Updated
+`tests/test_orchestrator_hosted.py::test_instructions_encode_routing_rules` to
+assert the new guidance and that CLASSIFY INTENT precedes DEFLECT FIRST. All
+existing rules (RELAY VERBATIM, CREATE ONLY ON CONFIRMATION,
+follow-up-about-existing-ticket → incident, never invent numbers/statuses/KB
+content) are intact. No tool wiring or telemetry changed.
+
+Rebuilt the hosted-agent container under a UNIQUE tag
+(`it-helpdesk-orchestrator:intent-20260709021807`) via `az acr build` and
+published hosted orchestrator **v4** via `AIProjectClient.agents.create_version`
+(reusing `helpdesk.agents.setup.create_hosted_orchestrator`). Verified live on env
+`ithelpdesksc` (swedencentral) by driving the dedicated agent endpoint exactly as
+the UI does (`project.get_openai_client(agent_name="it-helpdesk-orchestrator")` →
+`client.responses.create`). App Insights `execute_tool` spans (`appi-ztk6zx5aedqtc`,
+cloud_RoleName `it-helpdesk-orchestrator`) prove routing:
+`troubleshoot_from_knowledge_base` fired EXACTLY once (07:22:28Z, the "my laptop is
+slow" new-problem case), while the priority-check, cold urgency-update, and cold
+status cases on INC0010047 each fired `manage_servicenow_incident` ONLY (07:23:06,
+07:23:20, 07:23:43Z) — triage/KB did NOT fire for any status/update intent.
+
+**Why:** The live orchestrator (v3) misrouted ticket status/lookup/update requests
+into the deflect-first KB path because the prompt led with "DEFLECT FIRST … for ANY
+technical problem" and had no explicit up-front intent-classification step. The
+knowledge base cannot answer questions about a specific ticket, so KB retrieval for
+a status/update intent is always wrong and wastes a hop. Classifying intent first
+makes routing deterministic: help-seeking deflects, ticket-management goes straight
+to ServiceNow.
+

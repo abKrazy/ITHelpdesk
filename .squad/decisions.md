@@ -709,3 +709,29 @@ full happy path passed (steps → "go ahead" → INC0010042 created → status q
 routed to the incident tool). NOTE: reusing an image tag does NOT bump the hosted
 version — use a unique tag to force a fresh pull + new version.
 
+
+---
+
+### 2026-07-09: Incident agent resolves INC number -> sys_id before update/lookup
+
+**By:** Trinity
+**What:** Added an explicit two-step "Resolving an incident by its INC number"
+section to both the live incident Prompt Agent instructions
+(`src/helpdesk/agents/definitions/incident_agent.py`) and the mock/reference
+instructions (`src/helpdesk/agents/prompts.py`). The agent must first LIST/query
+the `incident` table with `sysparm_query=number={INC}` (fields
+`sys_id,number,short_description,urgency,state,assignment_group`) to resolve the
+`sys_id`, then apply `getRecord`/`patchRecord` on `incident/{sys_id}`. It reports
+"does not exist" ONLY when the list query returns an empty `result`. Urgency
+mapping (low=3, medium=2, high=1) preserved. Republished the live
+`it-helpdesk-incident` Prompt Agent (v4) via `create_version`.
+**Why:** The ServiceNow APIM MCP spec exposes only sys_id-keyed get/patch/put/delete
+operations plus a list/query. The agent was passing the INC `number` field where a
+`sys_id` path key is required, so ServiceNow returned not-found/restricted on every
+follow-up update or status lookup by number (user-reported live bug: INC0010043
+"does not appear to exist"). No `allowed_tools` change was needed — the MCPTool
+already exposes `queryTable`; the bug was purely instructional. Live-verified on
+env `ithelpdesksc`: created INC0010044, updated urgency to medium in a separate
+call (sys_id resolved + patched), and status-by-number returned the record with
+urgency 2.
+

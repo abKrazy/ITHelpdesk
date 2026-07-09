@@ -167,7 +167,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
 
     ids = setup.create_foundry_agents(
         project_endpoint="https://x.services.ai.azure.com/api/projects/p",
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         search_endpoint="https://search.example.net",
         search_index_name="it-helpdesk-kb",
         apim_mcp_url="https://apim.example.net/mcp",
@@ -193,7 +193,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     # create_version called once per spec with the right model + instructions.
     created = {c["agent_name"]: c["definition"] for c in client.agents.create_calls}
     assert set(created) == set(setup._AGENT_NAMES)
-    assert created["it-helpdesk-triage"].model == "gpt-4o"
+    assert created["it-helpdesk-triage"].model == "gpt-5.4"
 
     # Triage grounds via an MCP tool on the KB connection (by NAME), NOT an inline
     # Azure AI Search tool or managed Index.
@@ -206,7 +206,7 @@ def test_create_foundry_agents_uses_new_experience(monkeypatch: pytest.MonkeyPat
     )
     assert not hasattr(triage_tool, "azure_ai_search")
 
-    assert created["it-helpdesk-incident"].model == "gpt-4o"
+    assert created["it-helpdesk-incident"].model == "gpt-5.4"
     assert created["it-helpdesk-incident"].instructions == "incident instructions"
     assert created["it-helpdesk-incident"].tools[0].mcp_connection_id == "servicenow-apim-mcp"
 

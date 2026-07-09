@@ -168,7 +168,7 @@ def create_app() -> FastAPI:
         conversation.append({"role": "user", "content": message})
         client = _openai_client()
         resp = client.responses.create(
-            model=settings.chat_deployment or "gpt-4o",
+            model=settings.chat_deployment or "gpt-5.4",
             input=conversation,
         )
         return ChatReply(reply=_extract_output_text(resp), route=["orchestrator"])
@@ -191,7 +191,7 @@ def create_app() -> FastAPI:
 
         def make_stream():
             return client.responses.create(
-                model=settings.chat_deployment or "gpt-4o",
+                model=settings.chat_deployment or "gpt-5.4",
                 input=conversation,
                 stream=True,
             )

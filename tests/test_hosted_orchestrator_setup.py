@@ -100,7 +100,7 @@ def test_create_hosted_orchestrator_registers_container_agent(
     image = "acr123.azurecr.io/it-helpdesk-orchestrator:tok"
     agent_id = setup.create_hosted_orchestrator(
         project_endpoint="https://x.services.ai.azure.com/api/projects/p",
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         image=image,
     )
 
@@ -123,7 +123,7 @@ def test_create_hosted_orchestrator_registers_container_agent(
     env = definition.environment_variables
     assert env["TRIAGE_AGENT_NAME"] == "it-helpdesk-triage"
     assert env["INCIDENT_AGENT_NAME"] == "it-helpdesk-incident"
-    assert env["AZURE_AI_MODEL_DEPLOYMENT_NAME"] == "gpt-4o"
+    assert env["AZURE_AI_MODEL_DEPLOYMENT_NAME"] == "gpt-5.4"
     # FOUNDRY_*, AGENT_*, and APPLICATIONINSIGHTS_CONNECTION_STRING are reserved for
     # platform use and auto-injected by Foundry Hosted Agents — passing them in
     # create_version fails with "reserved for platform use", so they MUST NOT be in
@@ -149,7 +149,7 @@ def test_create_hosted_orchestrator_honours_protocol_version_override(
 
     setup.create_hosted_orchestrator(
         project_endpoint="https://x/api/projects/p",
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         image="acr/it-helpdesk-orchestrator:latest",
     )
 
@@ -175,7 +175,7 @@ def test_create_hosted_orchestrator_sets_nonreserved_telemetry_knobs(
 
     setup.create_hosted_orchestrator(
         project_endpoint="https://x/api/projects/p",
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         image="acr/it-helpdesk-orchestrator:latest",
     )
 

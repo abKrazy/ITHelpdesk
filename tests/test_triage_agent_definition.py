@@ -66,7 +66,7 @@ def test_build_triage_definition_attaches_kb_mcp_tool(monkeypatch: pytest.Monkey
     _install_fake_projects_models(monkeypatch)
 
     definition = triage_agent.build_triage_definition(
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         kb_mcp_url=(
             "https://srch.search.windows.net/knowledgebases/it-helpdesk-kb/mcp"
             "?api-version=2026-05-01-preview"
@@ -74,7 +74,7 @@ def test_build_triage_definition_attaches_kb_mcp_tool(monkeypatch: pytest.Monkey
         kb_connection_name="it-helpdesk-kb-mcp",
     )
 
-    assert definition.model == "gpt-4o"
+    assert definition.model == "gpt-5.4"
     assert definition.instructions == triage_agent.TRIAGE_INSTRUCTIONS
     assert len(definition.tools) == 1
     tool = definition.tools[0]
@@ -95,7 +95,7 @@ def test_build_triage_definition_requires_all_inputs(
 ) -> None:
     _install_fake_projects_models(monkeypatch)
     kwargs = {
-        "chat_deployment": "gpt-4o",
+        "chat_deployment": "gpt-5.4",
         "kb_mcp_url": "https://srch/knowledgebases/it-helpdesk-kb/mcp",
         "kb_connection_name": "it-helpdesk-kb-mcp",
     }

@@ -37,12 +37,12 @@ def test_build_incident_definition_attaches_mcp_tool(monkeypatch: pytest.MonkeyP
     _install_fake_projects_models(monkeypatch)
 
     definition = incident_agent.build_incident_definition(
-        chat_deployment="gpt-4o",
+        chat_deployment="gpt-5.4",
         apim_mcp_url="https://apim.azure-api.net/servicenow/mcp",
         mcp_connection_id="servicenow-apim-mcp",
     )
 
-    assert definition.model == "gpt-4o"
+    assert definition.model == "gpt-5.4"
     assert definition.instructions == incident_agent.INCIDENT_INSTRUCTIONS
     assert len(definition.tools) == 1
     tool = definition.tools[0]

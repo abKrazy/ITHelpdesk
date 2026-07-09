@@ -40,7 +40,7 @@ PROJECT_ENDPOINT = (
 MODEL = (
     os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME")
     or os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT")
-    or "gpt-4o"
+    or "gpt-5.4"
 )
 TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")

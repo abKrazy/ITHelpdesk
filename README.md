@@ -116,7 +116,7 @@ models** into the Foundry account in your chosen region:
 
 | Model | Deployment name | SKU / type | Capacity (TPM) | Default in |
 |-------|-----------------|-----------|----------------|-----------|
-| **`gpt-4o`** (chat) | `gpt-4o` | `GlobalStandard` | **30** (30K tokens/min) | `main.bicep` `chatModelName`/`chatModelDeploymentName` |
+| **`gpt-5.4`** (chat) | `gpt-5.4` | `GlobalStandard` | **30** (30K tokens/min) | `main.bicep` `chatModelName`/`chatModelDeploymentName` |
 | **`text-embedding-3-large`** (embeddings) | `text-embedding-3-large` | `Standard` | **30** (30K tokens/min) | `main.bicep` `embeddingModelName`/`embeddingModelDeploymentName` |
 
 Model **version** is not pinned; Foundry uses the current default
@@ -165,7 +165,7 @@ Pick a region that supports **all** of:
   [Hosted Agents region availability](https://learn.microsoft.com/azure/foundry/agents/concepts/hosted-agents#region-availability).
   (Plain **East US is _not_ supported** for Hosted Agents, even though it supports
   Prompt Agents.)
-- **`gpt-4o` (GlobalStandard)** and **`text-embedding-3-large` (Standard)** in
+- **`gpt-5.4` (GlobalStandard)** and **`text-embedding-3-large` (Standard)** in
   Azure AI Foundry — see [model region availability](https://learn.microsoft.com/azure/ai-services/openai/concepts/models).
   Note: some Hosted-Agents regions (e.g. North Central US, West US) do **not**
   offer `text-embedding-3-large` on the **Standard** SKU — verify before choosing.
@@ -180,7 +180,7 @@ Pick a region that supports **all** of:
 
 ```bash
 az cognitiveservices usage list --location swedencentral \
-  --query "[?contains(name.value,'gpt-4o') || contains(name.value,'text-embedding-3-large')].{name:name.value,current:currentValue,limit:limit}" -o table
+  --query "[?contains(name.value,'gpt-5.4') || contains(name.value,'text-embedding-3-large')].{name:name.value,current:currentValue,limit:limit}" -o table
 ```
 
 > **Governed / policy-locked subscriptions.** Some enterprise subscriptions enforce
@@ -215,7 +215,7 @@ A hackathon-scale deployment is inexpensive but **not free**. Rough drivers:
 
 - **API Management — Developer tier:** ~**$0.07/hour (~$50/month)**. Billed while
   provisioned; **also takes ~30–45 min to create** (see Troubleshooting).
-- **Azure AI Foundry model usage:** pay-per-token for `gpt-4o` + embeddings —
+- **Azure AI Foundry model usage:** pay-per-token for `gpt-5.4` + embeddings —
   cents for a demo, scales with traffic.
 - **App Service B1**, **AI Search basic**, **Storage**, **Key Vault**,
   **Log Analytics/App Insights:** a few dollars/day combined.
@@ -322,7 +322,7 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `azd up` fails on a role assignment (`AuthorizationFailed`, `RoleAssignmentUpdateNotPermitted`) | Deploying user lacks role-assignment rights | Grant **Owner**, or **Contributor + User Access Administrator**, on the subscription (see Prerequisites §2). |
-| Model deployment fails with a quota / capacity error | No quota for `gpt-4o` or `text-embedding-3-large` in the region | Request quota, lower `capacity` in `main.bicep`, or choose another region (Prerequisites §3). |
+| Model deployment fails with a quota / capacity error | No quota for `gpt-5.4` or `text-embedding-3-large` in the region | Request quota, lower `capacity` in `main.bicep`, or choose another region (Prerequisites §3). |
 | `azd up` seems stuck for 30–45 min | **APIM Developer tier provisioning is slow (normal)** — a fresh APIM instance takes ~30–45 min to activate | Wait; it's not hung. Subsequent `azd up` runs are much faster. |
 | `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
 | Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |

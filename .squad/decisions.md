@@ -735,3 +735,75 @@ env `ithelpdesksc`: created INC0010044, updated urgency to medium in a separate
 call (sys_id resolved + patched), and status-by-number returned the record with
 urgency 2.
 
+
+---
+
+### 2026-07-09: Foundry project AppInsights connection + hosted-orchestrator telemetry env vars
+**By:** Tank
+**What:** Closed both telemetry infra gaps so Foundry tracing works end-to-end.
+1. Added a control-plane **AppInsights** project connection in `infra/modules/foundry.bicep`
+   (`Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview`,
+   `category: 'AppInsights'`, `authType: 'ApiKey'`, `target` = App Insights resource ID,
+   `credentials.key` = App Insights connection string, `isSharedToAll: true`,
+   `metadata: { ApiType: 'Azure', ResourceId: <App Insights resource ID> }`). Threaded new
+   params `applicationInsightsResourceId` + `applicationInsightsConnectionString` (@secure) from
+   `main.bicep` (`monitoring.outputs.*`), and emit `AZURE_AI_APPINSIGHTS_CONNECTION_NAME`.
+   Created it **live** in env `ithelpdesksc` on project `proj-ztk6zx5aedqtc` as
+   `proj-ztk6zx5aedqtc-appinsights` (ARM PUT) — verified it lists as category AppInsights,
+   `isDefault: true`.
+2. Hosted orchestrator container now receives `APPLICATIONINSIGHTS_CONNECTION_STRING`,
+   `OTEL_SERVICE_NAME=it-helpdesk-orchestrator`, and
+   `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED=true` via
+   `helpdesk.agents.setup.create_hosted_orchestrator` (new optional
+   `applicationinsights_connection_string` param, read from env, never hardcoded);
+   `scripts/postprovision.py` passes `env("APPLICATIONINSIGHTS_CONNECTION_STRING")`.
+   Did NOT redeploy the hosted orchestrator — Trinity owns the single redeploy after adding
+   instrumentation code.
+**Why:** App Insights + Log Analytics were provisioned but nothing linked them to the Foundry
+project, so the portal Tracing tab was empty and `AIProjectClient(...).telemetry.get_connection_string()`
+couldn't resolve a connection; and the hosted orchestrator container had no App Insights connection
+string to export traces. The AppInsights connection shape was verified against
+Azure-Samples/foundry-hosted-agentframework-demos (`infra/core/ai/ai-project.bicep`). Connections
+must be created control-plane because azure-ai-projects 2.x has no data-plane connection-create API.
+
+
+---
+
+### 2026-07-09: Hosted orchestrator emits OpenTelemetry traces to App Insights (Foundry Tracing tab)
+**By:** Trinity
+**What:** Instrumented the MAF hosted orchestrator (`src/orchestrator/main.py`)
+with OpenTelemetry. At startup `configure_telemetry()` resolves the App Insights
+connection string from `APPLICATIONINSIGHTS_CONNECTION_STRING` (falling back to
+`AIProjectClient(...).telemetry.get_connection_string()`), calls
+`azure.monitor.opentelemetry.configure_azure_monitor(connection_string=...)`, and
+enables Microsoft Agent Framework's built-in GenAI instrumentation
+(`agent_framework.observability.enable_instrumentation` +
+`enable_sensitive_telemetry` gated on
+`AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED`). Setup is guarded so it no-ops
+(never raises) when no connection string is available (local/mock). Each sub-agent
+handoff in `_invoke_prompt_agent` is wrapped in an explicit `invoke_agent {name}`
+span with `gen_ai.*` attributes so the triage/incident handoffs are visible.
+Added `azure-monitor-opentelemetry` to `src/orchestrator/requirements.txt`.
+Cloud role name = `it-helpdesk-orchestrator` via `OTEL_SERVICE_NAME`.
+
+**IMPORTANT platform change:** Foundry now **reserves and auto-injects**
+`APPLICATIONINSIGHTS_CONNECTION_STRING` for hosted agents (same as `FOUNDRY_*` /
+`AGENT_*`). Passing it to `AIProjectClient.agents.create_version` fails with
+`invalid_payload ... reserved for platform use`. So
+`helpdesk.agents.setup.create_hosted_orchestrator` no longer sets it (or accepts
+the `applicationinsights_connection_string` param); it only sets the non-reserved
+knobs `OTEL_SERVICE_NAME` and `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED`.
+`postprovision.py` updated accordingly.
+
+**Why:** The spec requires the orchestrator's traces to flow to the App Insights
+the Foundry project is connected to and appear in the portal Tracing tab.
+Live-verified against env `ithelpdesksc` (swedencentral): published hosted
+orchestrator **v3** (image `it-helpdesk-orchestrator:otel-20260709005349`), drove
+real requests, and confirmed spans in App Insights `appi-ztk6zx5aedqtc` (Log
+Analytics workspace `log-ztk6zx5aedqtc`): `invoke_agent it-helpdesk-orchestrator`,
+`invoke_agent it-helpdesk-triage`, `invoke_agent it-helpdesk-incident`,
+`execute_tool troubleshoot_from_knowledge_base`,
+`execute_tool manage_servicenow_incident`, and `chat gpt-4o` under
+`cloud_RoleName == "it-helpdesk-orchestrator"`. Telemetry is additive only — the
+verbatim-relay instructions, deflect-first flow, and tool wiring are unchanged.
+

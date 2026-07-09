@@ -2,6 +2,116 @@
 
 ## Active Decisions
 
+# Decision — Kill the orchestrator relay pass (stream sub-agent through)
+
+**Author:** Trinity (AI / Agent Engineer)
+**Date:** 2026-07-09
+**Env:** ithelpdesksc (swedencentral) · App Insights `appi-ztk6zx5aedqtc`
+**Status:** Shipped + proven live
+
+## Context / latency lever #2
+
+Trace analysis proved each orchestrator turn made **two** gpt-5.4 model
+round-trips: pass#1 (routing brain — decide which sub-agent) and pass#2 (relay —
+re-invoke the model purely to repeat the sub-agent's answer verbatim). Pass#2
+carried ~6.5s of fixed hosted-agent + Responses + tool-calling overhead and
+produced **no new content**. This decision eliminates pass#2 while keeping pass#1
+(routing intelligence) intact.
+
+## What changed
+
+**Mechanism (MAF-supported, no framework hacks — option (a)):** replaced the
+`agent_framework` `Agent` + `@tool` orchestrator with a custom
+`RelayOrchestrator(BaseAgent)` in `src/orchestrator/main.py`:
+
+1. **One routing model pass** (`_route_intent`, spanned `chat gpt-5.4`) calls the
+   Foundry Responses API with `instructions` + `input` + two flat function-tools
+   (`troubleshoot_from_knowledge_base`, `manage_servicenow_incident`),
+   `tool_choice="auto"`, `parallel_tool_calls=False`. It reads the FIRST known
+   function call and resolves the target sub-agent + a self-contained NL argument.
+   (Confirmed live that a plain routing call with NO `agent_reference` works.)
+2. **Proxy-stream** the chosen Foundry Prompt Agent's Responses output straight
+   through as the terminal answer (`_astream_prompt_agent` → `invoke_agent {name}`
+   span). We forward **only** `response.output_text.delta` events, so the
+   sub-agent's own inner tool calls never leak as bogus handoff chips; inline KB
+   citations `【…†source】` are preserved.
+3. **No second model generation.** `run(stream=True)` yields the handoff
+   `function_call` chip FIRST (Content.from_function_call → hosting emits
+   `response.output_item.added`(function_call,name)), then text deltas. This
+   reproduces the exact live SSE shape the UI consumes, so **NO UI/Switch change
+   is required**.
+
+**Model-per-agent constraint preserved:** the proxy invokes triage with
+`TRIAGE_MODEL` (gpt-5.4-mini) and incident with `MODEL` (gpt-5.4) — Foundry rejects
+a model/agent mismatch (HTTP 400). `ORCHESTRATOR_REASONING_EFFORT` knob retained
+(now tunes the single routing pass).
+
+**Framing migrated:** the deflect-first close ("Did these steps resolve the issue?
+If not, I can open a ticket for you.") was previously added by the orchestrator
+**relay**. It was migrated into `TRIAGE_INSTRUCTIONS`
+(`definitions/triage_agent.py`) so the triage sub-agent's own output is already the
+complete, user-ready message. The incident prompt was **unchanged** — its raw
+output (INC/state/group/urgency/short-desc) already matched today's relay output,
+so nothing was migrated there (no added text = strict equivalence).
+
+## Rubber-duck review
+
+A rubber-duck review confirmed the direction and hardened the design: (1) whitelist
+ONLY `response.output_text.delta` in the proxy (no bogus chips); (2)
+`parallel_tool_calls=False` + take first known call; (3) constrain direct routing
+replies to clarification-only to protect deflect-first; (4) self-contained tool
+args read from history (added a create-on-confirm regression test); (5) golden
+SSE-frame test; (6) defined mid-stream failure semantics. All incorporated.
+
+## Versions
+
+- Orchestrator hosted agent: **v10** (image
+  `acrztk6zx5aedqtc.azurecr.io/it-helpdesk-orchestrator:killrelay-20260709130348-07134cf`,
+  `az acr build` UNIQUE tag → `create_version`).
+- Triage Prompt Agent: **v6** (deflect-close migrated). Incident: **v5**
+  (unchanged).
+
+## Proof (live, env ithelpdesksc)
+
+**5-case regression — all equivalent:** (a) deflect-first KB verbatim steps +
+Desktop Support + citations + "no ticket yet" + deflect-close; (b) create-on-confirm
+only after user confirmed (INC0010060, self-contained args read assignment group
+from history); (c) status lookup routed to incident ONLY (no KB/triage); (d) cold
+sys_id-resolving update (number→sys_id→patch: urgency High→Medium, confirmed by
+read-back); (e) streaming token frames + handoff chips ("Calling
+Orchestrator/Triage/Incident Agent") intact.
+
+**Latency BEFORE (v9) → AFTER (v10)**, per-turn TTFT / total seconds:
+- A deflect KB: 20.06 / 26.35 → 16.02 / 16.84 (−36%)
+- B t1 KB: 19.93 / 27.24 → 10.45 / 11.23 (−59%)
+- B t2 create: 27.14 / 33.15 → 13.59 / 17.73 (−46%)
+- C status: 20.04 / 25.87 → 11.58 / 12.15 (−53%)
+- D update: 19.32 / 25.20 → 8.06 / 8.67 (−66%; clean High→Medium 12.74 / 17.41)
+
+**KQL (App Insights, cloud_RoleName `it-helpdesk-orchestrator`, `chat gpt-5.4`
+`dcount(id)` per operation_Id):** BEFORE = **2** orchestrator model passes/turn
+(routing + relay; 3 for multi-step creates); AFTER = **1** pass/turn across all
+turns. The 2nd orchestrator gpt-5.4 relay pass is **gone**. Sub-agent generation
+still runs under `responsesapi` role (triage gpt-5.4-mini, incident gpt-5.4).
+
+## Notes / minor differences
+
+- KB **citations** `【…†source】` now surface inline (the raw triage output includes
+  them; the old relay stripped them). This is expected/desired per design and adds
+  KB-grounding transparency — steps, assignment group, and deflect-close are all
+  equivalent.
+- Create turns now emit **one** `manage_servicenow_incident` chip (routing picks
+  one tool) vs the old design's occasional duplicate incident chips; the UI status
+  label is identical ("Calling Incident Agent"), so no contract change.
+
+## Tests
+
+`ruff check .` clean; `pytest` green (115 tests). `tests/test_orchestrator_hosted.py`
+rewritten for the routing-then-proxy design: routing selection, self-contained
+create-confirm args, golden SSE (chip-then-text) equivalence, output_text.delta
+whitelist, plus the retained model-per-agent regression.
+
+
 ### 2026-07-09: Warm-keep for first-turn cold start (latency lever #4) — App Service fixed in-infra; Foundry hosted-agent runtime exposes NO warm knob (keep-alive offered as an option)
 **By:** Tank (Infra / Platform Engineer)
 **Status:** App Service warm-keep APPLIED + reproducible in bicep. Foundry hosted-orchestrator warm-keep NOT possible via infra — reported as an option for abKrazy.

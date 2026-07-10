@@ -12,13 +12,17 @@ from __future__ import annotations
 
 import json
 import importlib
+import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from agent_framework import Content, Message
 from fastapi.testclient import TestClient
 
 ui_app_module = importlib.import_module("helpdesk.ui.app")
 app = ui_app_module.app
+agui_proxy_module = importlib.import_module("helpdesk.ui.agui_proxy")
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +146,27 @@ def _parse_sse(body: str) -> list[dict]:
         if line.startswith("data:"):
             events.append(json.loads(line[len("data:"):].strip()))
     return events
+
+
+async def _post_agui(payload: dict) -> list[dict]:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.post("/agui", json=payload)
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    return _parse_sse(resp.text)
+
+
+def _text_deltas(events: list[dict]) -> str:
+    return "".join(e.get("delta", "") for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
+
+
+def _interrupt(events: list[dict]) -> dict:
+    finished = [e for e in events if e["type"] == "RUN_FINISHED"]
+    assert finished
+    outcome = finished[-1].get("outcome")
+    assert outcome and outcome["type"] == "interrupt"
+    return outcome["interrupts"][0]
 
 
 def test_chat_stream_yields_tokens_then_done(client: TestClient) -> None:
@@ -369,3 +394,157 @@ def test_chat_stream_emits_incident_handoff_status(client: TestClient) -> None:
     assert "Calling Incident Agent" in labels
     incident = next(s for s in statuses if s["label"] == "Calling Incident Agent")
     assert incident["tool"] == "manage_servicenow_incident"
+
+
+@pytest.mark.asyncio
+async def test_agui_endpoint_interrupt_then_approve_executes_mock_update() -> None:
+    payload = {
+        "threadId": "agui-approve-thread",
+        "runId": "agui-approve-initial",
+        "messages": [
+            {
+                "id": "user-1",
+                "role": "user",
+                "content": "update urgency for INC0010027 to low",
+            }
+        ],
+    }
+    initial_events = await _post_agui(payload)
+
+    tool_names = [e.get("toolCallName") for e in initial_events if e["type"] == "TOOL_CALL_START"]
+    assert "route_orchestrator" in tool_names
+    assert "manage_servicenow_incident" in tool_names
+
+    interrupt = _interrupt(initial_events)
+    proposal_json = interrupt["metadata"]["agent_framework"]["function_call"]["arguments"][
+        "proposal_json"
+    ]
+    proposal = json.loads(proposal_json)
+    assert proposal["operation"] == "update"
+    assert proposal["incident_number"] == "INC0010027"
+    assert proposal["delta"] == {"urgency": "3"}
+
+    approved_events = await _post_agui(
+        {
+            **payload,
+            "runId": "agui-approve-resume",
+            "resume": [
+                {
+                    "interruptId": interrupt["id"],
+                    "status": "resolved",
+                    "payload": {"approved": True, "proposal_json": proposal_json},
+                }
+            ],
+        }
+    )
+
+    results = [e for e in approved_events if e["type"] == "TOOL_CALL_RESULT"]
+    assert results
+    assert "Updated incident INC0010027" in results[0]["content"]
+    assert "Approved ServiceNow change executed" in _text_deltas(approved_events)
+    assert approved_events[-1]["type"] == "RUN_FINISHED"
+    assert "outcome" not in approved_events[-1]
+
+
+@pytest.mark.asyncio
+async def test_agui_endpoint_reject_does_not_execute_mock_update() -> None:
+    payload = {
+        "threadId": "agui-reject-thread",
+        "runId": "agui-reject-initial",
+        "messages": [
+            {
+                "id": "user-1",
+                "role": "user",
+                "content": "update urgency for INC0010027 to low",
+            }
+        ],
+    }
+    initial_events = await _post_agui(payload)
+    interrupt = _interrupt(initial_events)
+
+    rejected_events = await _post_agui(
+        {
+            **payload,
+            "runId": "agui-reject-resume",
+            "resume": [
+                {
+                    "interruptId": interrupt["id"],
+                    "status": "resolved",
+                    "payload": {"approved": False},
+                }
+            ],
+        }
+    )
+
+    assert not [e for e in rejected_events if e["type"] == "TOOL_CALL_RESULT"]
+    assert "ServiceNow change cancelled" in _text_deltas(rejected_events)
+
+
+def test_agui_live_proxy_emits_citations_tool_side_channel() -> None:
+    citations = [
+        {
+            "index": 1,
+            "sourceId": "laptop-performance",
+            "sourceTitle": "Laptop Running Slow",
+            "sourceName": "laptop-performance.md",
+            "assignmentGroup": "Desktop Support",
+            "markers": ["\u30105:0\u2020source\u3011"],
+            "chunkIds": ["laptop-performance-2"],
+            "url": "mcp://searchindex/laptop-performance-2",
+        }
+    ]
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="triage-call",
+                name="troubleshoot_from_knowledge_base",
+            ),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="Try these steps."),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            name="citations",
+            item_id="citations-call",
+            arguments=json.dumps({"citations": citations}),
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+
+    class _FakeResponses:
+        def create(self, **_kwargs):
+            return iter(events)
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    proxy = agui_proxy_module.HelpdeskAGUIProxyAgent(
+        settings_factory=lambda: SimpleNamespace(mock_mode=False, chat_deployment="test-model"),
+        mock_orchestrator_factory=lambda: None,
+        openai_client_factory=lambda: _FakeClient(),
+    )
+
+    async def _collect():
+        return [
+            update
+            async for update in proxy.run(
+                messages=[Message("user", [Content.from_text("my laptop is slow")])],
+                stream=True,
+            )
+        ]
+
+    updates = asyncio.run(_collect())
+    function_calls = [
+        content
+        for update in updates
+        for content in update.contents
+        if content.type == "function_call"
+    ]
+
+    assert [call.name for call in function_calls[:2]] == [
+        "route_orchestrator",
+        "troubleshoot_from_knowledge_base",
+    ]
+    citation_call = next(call for call in function_calls if call.name == "citations")
+    assert citation_call.arguments["citations"] == citations

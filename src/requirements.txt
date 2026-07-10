@@ -11,6 +11,9 @@
 # Version constraints mirror pyproject.toml so mock and live match.
 
 # --- Web server + UI (pyproject [ui] + appservice.bicep start command) ---
+agent-framework-ag-ui==1.0.0rc8
+agent-framework==1.11.0
+ag-ui-protocol==0.1.19
 fastapi>=0.111
 uvicorn[standard]>=0.30
 gunicorn>=22.0

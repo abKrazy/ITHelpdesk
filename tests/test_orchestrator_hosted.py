@@ -88,6 +88,7 @@ def test_default_sub_agent_names(orchestrator_main) -> None:
     assert orchestrator_main.TRIAGE_AGENT_NAME == "it-helpdesk-triage"
     assert orchestrator_main.INCIDENT_AGENT_NAME == "it-helpdesk-incident"
     assert orchestrator_main.PORT == 8088
+    assert orchestrator_main.ORCHESTRATOR_CONTRACT_VERSION == "agui-proposal-mode-v1"
 
 
 def test_build_agent_returns_relay_orchestrator(orchestrator_main) -> None:
@@ -253,6 +254,7 @@ def test_route_intent_selects_incident_for_status(orchestrator_main, monkeypatch
     assert decision.tool_name == "manage_servicenow_incident"
     assert decision.agent_name == "it-helpdesk-incident"
     assert decision.sub_agent_input == "status of INC0010045"
+    assert decision.servicenow_write_proposal is None
 
 
 def test_route_intent_create_confirm_is_self_contained(orchestrator_main, monkeypatch) -> None:
@@ -309,6 +311,34 @@ def test_route_intent_enriches_create_request_from_history_assignment_group(
     assert decision.agent_name == "it-helpdesk-incident"
     assert decision.sub_agent_input.endswith("assignment_group: Desktop Support")
     assert json.loads(decision.arguments_json)["request"] == decision.sub_agent_input
+    assert decision.servicenow_write_proposal is not None
+    assert decision.servicenow_write_proposal["operation"] == "create"
+    assert decision.servicenow_write_proposal["assignment_group"] == "Desktop Support"
+
+
+def test_route_intent_update_returns_write_proposal(orchestrator_main, monkeypatch) -> None:
+    resp = SimpleNamespace(
+        output=[
+            _fc_item(
+                "manage_servicenow_incident",
+                '{"request":"update urgency for INC0010027 to low"}',
+            )
+        ],
+        output_text=None,
+    )
+    _patch_route_client(orchestrator_main, monkeypatch, resp)
+
+    decision = orchestrator_main._route_intent(
+        [{"role": "user", "content": "update urgency for INC0010027 to low"}]
+    )
+
+    assert decision.agent_name == "it-helpdesk-incident"
+    assert decision.servicenow_write_proposal == {
+        "operation": "update",
+        "incident_number": "INC0010027",
+        "delta": {"urgency": "3"},
+        "summary": "update urgency for INC0010027 to low",
+    }
 
 
 def test_route_intent_direct_reply_when_no_tool(orchestrator_main, monkeypatch) -> None:
@@ -554,6 +584,69 @@ def test_run_stream_emits_terminal_citations_frame(
     payload = json.loads(last.arguments)
     assert payload["citations"][0]["sourceTitle"] == "Laptop Running Slow"
     assert payload["citations"][0]["index"] == 1
+
+
+def test_run_stream_emits_proposal_without_invoking_incident(
+    orchestrator_main, monkeypatch
+) -> None:
+    decision = orchestrator_main.RouteDecision(
+        tool_name="manage_servicenow_incident",
+        agent_name="it-helpdesk-incident",
+        sub_agent_input="update urgency for INC0010027 to low",
+        call_id="call_123",
+        arguments_json='{"request":"update urgency for INC0010027 to low"}',
+        servicenow_write_proposal={
+            "operation": "update",
+            "incident_number": "INC0010027",
+            "delta": {"urgency": "3"},
+            "summary": "update urgency for INC0010027 to low",
+        },
+    )
+    monkeypatch.setattr(orchestrator_main, "_route_intent", lambda items: decision)
+
+    async def _should_not_run(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("incident agent should not execute before approval")
+        yield ""
+
+    monkeypatch.setattr(orchestrator_main, "_astream_prompt_agent", _should_not_run)
+
+    agent = orchestrator_main.build_agent()
+    updates = _drain_stream(agent.run(messages="update urgency for INC0010027 to low", stream=True))
+
+    assert updates[0].contents[0].name == "manage_servicenow_incident"
+    proposal_call = updates[1].contents[0]
+    assert proposal_call.type == "function_call"
+    assert proposal_call.name == "servicenow_write_proposal"
+    assert json.loads(proposal_call.arguments)["operation"] == "update"
+
+
+def test_run_stream_execute_approved_reinvokes_incident_agent(
+    orchestrator_main, monkeypatch
+) -> None:
+    proposal = {
+        "operation": "update",
+        "incident_number": "INC0010027",
+        "delta": {"urgency": "3"},
+        "summary": "update urgency for INC0010027 to low",
+    }
+    command = orchestrator_main._approved_proposal_command(proposal)
+    captured: dict[str, str] = {}
+
+    async def _fake_astream(agent_name, message):
+        captured["agent_name"] = agent_name
+        captured["message"] = message
+        yield "Updated incident INC0010027: urgency=Low."
+
+    monkeypatch.setattr(orchestrator_main, "_astream_prompt_agent", _fake_astream)
+
+    agent = orchestrator_main.build_agent()
+    updates = _drain_stream(agent.run(messages=command, stream=True))
+
+    assert updates[0].contents[0].name == "manage_servicenow_incident"
+    assert captured["agent_name"] == "it-helpdesk-incident"
+    assert "APPROVED BY USER" in captured["message"]
+    assert "INC0010027" in captured["message"]
+    assert updates[1].contents[0].text == "Updated incident INC0010027: urgency=Low."
 
 
 def test_run_stream_emits_chip_then_text(orchestrator_main, monkeypatch) -> None:

@@ -52,6 +52,7 @@ class OrchestratorResponse:
     route: list[str] = field(default_factory=list)
     triage: TriageResult | None = None
     incident: IncidentResult | None = None
+    servicenow_write_proposal: dict[str, Any] | None = None
 
 
 class Orchestrator:
@@ -68,7 +69,11 @@ class Orchestrator:
         self._incident = incident_agent or IncidentAgent()
 
     def run(
-        self, user_message: str, history: list[dict[str, str] | Any] | None = None
+        self,
+        user_message: str,
+        history: list[dict[str, str] | Any] | None = None,
+        *,
+        propose_writes: bool = False,
     ) -> OrchestratorResponse:
         text = user_message.strip()
         prior_turns = (history or [])[-10:]
@@ -78,6 +83,8 @@ class Orchestrator:
 
         # 1. Existing incident + change request -> incident update (§3.4)
         if wants_update:
+            if propose_writes:
+                return self._proposal_only(self._update_proposal(text), ["incident"])
             return self._incident_only(text, "update")
 
         # 2. Existing incident, no change verb -> incident lookup (§3.3)
@@ -89,6 +96,13 @@ class Orchestrator:
         original_problem = self._prior_ticket_offer_problem(prior_turns)
         if original_problem and self._is_confirmation(text):
             triage = self._triage.run(original_problem)
+            if propose_writes:
+                proposal = self._create_proposal(
+                    original_problem,
+                    triage.assignment_group,
+                    short_description=self._short_desc(original_problem, triage),
+                )
+                return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
             incident = self._incident.create(
                 original_problem,
                 assignment_group=triage.assignment_group,
@@ -112,6 +126,13 @@ class Orchestrator:
                     route=["triage"],
                     triage=triage,
                 )
+            if propose_writes:
+                proposal = self._create_proposal(
+                    text,
+                    triage.assignment_group,
+                    short_description=self._short_desc(problem_text, triage),
+                )
+                return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
             incident = self._incident.create(
                 text,
                 assignment_group=triage.assignment_group,
@@ -132,6 +153,13 @@ class Orchestrator:
             return OrchestratorResponse(
                 reply=triage.answer, route=["triage"], triage=triage
             )
+        if propose_writes:
+            proposal = self._create_proposal(
+                text,
+                triage.assignment_group,
+                short_description=self._short_desc(text, triage),
+            )
+            return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
         incident = self._incident.create(
             text,
             assignment_group=triage.assignment_group,
@@ -153,10 +181,93 @@ class Orchestrator:
             reply=incident.message, route=["incident"], incident=incident
         )
 
+    def execute_approved_proposal(self, proposal: dict[str, Any]) -> OrchestratorResponse:
+        """Execute a human-approved ServiceNow write proposal in mock mode."""
+        operation = str(proposal.get("operation") or "").lower()
+        if operation == "create":
+            description = str(proposal.get("description") or "").strip()
+            short_description = str(proposal.get("short_description") or description).strip()
+            incident = self._incident.create(
+                description or short_description,
+                assignment_group=str(proposal.get("assignment_group") or ""),
+                short_description=short_description,
+            )
+            return OrchestratorResponse(
+                reply=incident.message, route=["incident"], incident=incident
+            )
+        if operation == "update":
+            incident_number = str(proposal.get("incident_number") or "").strip()
+            delta = proposal.get("delta") if isinstance(proposal.get("delta"), dict) else {}
+            request = self._update_request_from_delta(incident_number, delta)
+            incident = self._incident.update(request)
+            return OrchestratorResponse(
+                reply=incident.message, route=["incident"], incident=incident
+            )
+        return OrchestratorResponse(
+            reply="I couldn't execute the approved ServiceNow proposal because the operation was unknown.",
+            route=["incident"],
+        )
+
     @staticmethod
     def _short_desc(text: str, triage: TriageResult) -> str:
         first = re.split(r"(?<=[.!?])\s+", text)[0].strip()
         return first[:160] if first else text[:160]
+
+    @staticmethod
+    def _create_proposal(
+        description: str,
+        assignment_group: str,
+        *,
+        short_description: str,
+        urgency: str = "2",
+    ) -> dict[str, Any]:
+        return {
+            "operation": "create",
+            "short_description": short_description,
+            "description": description.strip(),
+            "assignment_group": assignment_group,
+            "urgency": urgency,
+        }
+
+    @staticmethod
+    def _update_proposal(text: str) -> dict[str, Any]:
+        number_match = _INC_RE.search(text)
+        delta: dict[str, str] = {}
+        lowered = text.lower()
+        if any(word in lowered for word in ("high", "critical", "urgent")):
+            delta["urgency"] = "1"
+        elif any(word in lowered for word in ("medium", "moderate")):
+            delta["urgency"] = "2"
+        elif "low" in lowered:
+            delta["urgency"] = "3"
+        return {
+            "operation": "update",
+            "incident_number": number_match.group(0).upper() if number_match else "",
+            "delta": delta,
+            "summary": text.strip(),
+        }
+
+    @staticmethod
+    def _update_request_from_delta(incident_number: str, delta: dict[str, Any]) -> str:
+        if "urgency" in delta:
+            labels = {"1": "high", "2": "medium", "3": "low"}
+            urgency = labels.get(str(delta["urgency"]), str(delta["urgency"]))
+            return f"update urgency for {incident_number} to {urgency}"
+        return f"update {incident_number}"
+
+    @staticmethod
+    def _proposal_only(
+        proposal: dict[str, Any],
+        route: list[str],
+        *,
+        triage: TriageResult | None = None,
+    ) -> OrchestratorResponse:
+        return OrchestratorResponse(
+            reply="ServiceNow write approval is required before I make that change.",
+            route=route,
+            triage=triage,
+            servicenow_write_proposal=proposal,
+        )
 
     @staticmethod
     def _problem_text_for_triage(text: str) -> str:

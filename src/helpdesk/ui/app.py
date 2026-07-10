@@ -35,10 +35,12 @@ from typing import Literal
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from agent_framework_ag_ui import AgentFrameworkAgent, add_agent_framework_fastapi_endpoint
 from pydantic import BaseModel, Field
 
 from ..orchestrator import Orchestrator
 from ..shared.config import get_settings
+from .agui_proxy import HelpdeskAGUIProxyAgent
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 _LOGGER = logging.getLogger(__name__)
@@ -181,6 +183,18 @@ def create_app() -> FastAPI:
                 agent_name=ORCHESTRATOR_AGENT_NAME
             )
         return app.state.openai_client
+
+    app.state.agui_proxy_agent = HelpdeskAGUIProxyAgent(
+        settings_factory=get_settings,
+        mock_orchestrator_factory=_mock_orchestrator,
+        openai_client_factory=_openai_client,
+    )
+    add_agent_framework_fastapi_endpoint(
+        app,
+        AgentFrameworkAgent(agent=app.state.agui_proxy_agent, require_confirmation=False),
+        "/agui",
+        keepalive_seconds=None,
+    )
 
     def _live_reply(message: str, history: list[dict[str, str]]) -> ChatReply:
         settings = get_settings()

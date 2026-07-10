@@ -195,6 +195,57 @@ def test_update_urgency_to_low(orch: Orchestrator) -> None:
     assert "Low" in resp.reply
 
 
+def test_proposal_mode_gates_create_without_executing(orch: Orchestrator) -> None:
+    resp = orch.run("Please file a ticket for qzxv jklm nprst.", propose_writes=True)
+
+    assert resp.route == ["triage", "incident"]
+    assert resp.incident is None
+    assert resp.servicenow_write_proposal is not None
+    assert resp.servicenow_write_proposal["operation"] == "create"
+    assert resp.servicenow_write_proposal["urgency"] == "2"
+
+
+def test_proposal_mode_gates_update_without_executing(orch: Orchestrator) -> None:
+    before = orch.run("lookup details for incident INC0010027").incident.incident["urgency"]
+    resp = orch.run("update urgency for INC0010027 to low", propose_writes=True)
+    after = orch.run("lookup details for incident INC0010027").incident.incident["urgency"]
+
+    assert resp.route == ["incident"]
+    assert resp.incident is None
+    assert resp.servicenow_write_proposal == {
+        "operation": "update",
+        "incident_number": "INC0010027",
+        "delta": {"urgency": "3"},
+        "summary": "update urgency for INC0010027 to low",
+    }
+    assert after == before
+
+
+def test_proposal_mode_does_not_gate_status_lookup(orch: Orchestrator) -> None:
+    resp = orch.run("lookup details for incident INC0000057", propose_writes=True)
+
+    assert resp.route == ["incident"]
+    assert resp.servicenow_write_proposal is None
+    assert resp.incident is not None and resp.incident.action == "lookup"
+    assert "State:" in resp.reply
+
+
+def test_execute_approved_update_proposal_runs_incident_agent(orch: Orchestrator) -> None:
+    proposal = {
+        "operation": "update",
+        "incident_number": "INC0010027",
+        "delta": {"urgency": "3"},
+        "summary": "update urgency for INC0010027 to low",
+    }
+
+    resp = orch.execute_approved_proposal(proposal)
+
+    assert resp.route == ["incident"]
+    assert resp.incident is not None and resp.incident.action == "update"
+    assert resp.incident.fields_changed == {"urgency": "3"}
+    assert "Updated incident INC0010027" in resp.reply
+
+
 # ---------------------------------------------------------------------------
 # Edge cases & failure modes.
 # ---------------------------------------------------------------------------

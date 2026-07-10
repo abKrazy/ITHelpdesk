@@ -87,6 +87,7 @@ TRIAGE_MODEL = (
 TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")
 PORT = int(os.environ.get("PORT", "8088"))
+ORCHESTRATOR_CONTRACT_VERSION = "agui-proposal-mode-v1"
 
 # Reasoning effort for the orchestrator's OWN gpt-5.x routing pass. With the relay
 # pass removed there is now exactly ONE orchestrator model pass per turn (routing),
@@ -555,6 +556,7 @@ class RouteDecision:
         call_id: str | None = None,
         arguments_json: str | None = None,
         direct_text: str | None = None,
+        servicenow_write_proposal: dict[str, Any] | None = None,
     ) -> None:
         self.tool_name = tool_name
         self.agent_name = agent_name
@@ -562,6 +564,7 @@ class RouteDecision:
         self.call_id = call_id
         self.arguments_json = arguments_json
         self.direct_text = direct_text
+        self.servicenow_write_proposal = servicenow_write_proposal
 
 
 def _tool_args_to_message(tool_name: str, arguments_json: str | None) -> str:
@@ -584,10 +587,17 @@ def _tool_args_to_message(tool_name: str, arguments_json: str | None) -> str:
 
 
 _ASSIGNMENT_GROUP_RE = re.compile(
-    r"(?:recommended\s+)?assignment\s+group\s*[:=]\s*([^\n.;\]]+)",
+    r"(?:recommended\s+)?assignment[\s_]+group\s*[:=]\s*([^\n.;\]]+)",
     re.IGNORECASE,
 )
 _CREATE_RE = re.compile(r"\b(create|open|file|log|raise)\b.*\b(ticket|incident)\b", re.I)
+_INCIDENT_NUMBER_RE = re.compile(r"\bINC\d{4,}\b", re.I)
+_UPDATE_INTENT_RE = re.compile(
+    r"\b(update|change|set|modify|escalate|lower|raise)\b|\burgency\b|\bpriority\b",
+    re.I,
+)
+SERVICENOW_WRITE_PROPOSAL_TOOL_NAME = "servicenow_write_proposal"
+_APPROVED_PROPOSAL_PREFIX = "EXECUTE_APPROVED_SERVICENOW_WRITE_PROPOSAL:"
 
 
 def _assignment_group_from_citations_payload(arguments_json: str | None) -> str:
@@ -650,6 +660,133 @@ def _enrich_create_request_with_assignment_group(
     return f"{request}; assignment_group: {assignment_group}"
 
 
+def _urgency_from_text(text: str) -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ("critical", "urgent", "high")):
+        return "1"
+    if any(word in lowered for word in ("low", "minor")):
+        return "3"
+    return "2"
+
+
+def _short_description_from_create_request(request: str) -> str:
+    text = re.sub(
+        r"\b(?:please\s+)?(?:create|open|raise|log|file)\b.{0,30}"
+        r"\b(?:incident|ticket|case)\b\s*(?:for|about|regarding)?\s*",
+        "",
+        request,
+        flags=re.I,
+    ).strip(" .;")
+    text = re.split(r";\s*(?:assignment_group|assign(?:ed)?\s+to)\b", text, maxsplit=1, flags=re.I)[0]
+    sentence = re.split(r"(?<=[.!?])\s+", text)[0].strip(" .;")
+    return (sentence or request.strip())[:160]
+
+
+def _update_delta_from_request(request: str) -> dict[str, str]:
+    delta: dict[str, str] = {}
+    lowered = request.lower()
+    if "urgency" in lowered or any(
+        word in lowered for word in ("critical", "urgent", "high", "medium", "moderate", "low")
+    ):
+        delta["urgency"] = _urgency_from_text(request)
+    group = _assignment_group_from_text(request)
+    if group:
+        delta["assignment_group"] = group
+    return delta
+
+
+def _assignment_group_from_text(text: str) -> str:
+    match = _ASSIGNMENT_GROUP_RE.search(text)
+    if match:
+        return match.group(1).strip(" .;]")
+    assign_match = re.search(r"\bassign(?:ed)?\s+to\s+([^\n.;\]]+)", text, re.I)
+    if assign_match:
+        return assign_match.group(1).strip(" .;]")
+    return ""
+
+
+def _build_servicenow_write_proposal(
+    tool_name: str | None,
+    request: str | None,
+) -> dict[str, Any] | None:
+    """Return a ServiceNow write proposal for create/update intents, else None."""
+    if tool_name != "manage_servicenow_incident" or not request:
+        return None
+
+    incident_match = _INCIDENT_NUMBER_RE.search(request)
+    if incident_match and _UPDATE_INTENT_RE.search(request):
+        return {
+            "operation": "update",
+            "incident_number": incident_match.group(0).upper(),
+            "delta": _update_delta_from_request(request),
+            "summary": request.strip(),
+        }
+
+    if _CREATE_RE.search(request):
+        assignment_group = _assignment_group_from_text(request)
+        return {
+            "operation": "create",
+            "short_description": _short_description_from_create_request(request),
+            "description": request.strip(),
+            "assignment_group": assignment_group,
+            "urgency": _urgency_from_text(request),
+        }
+
+    return None
+
+
+def _approved_proposal_command(proposal: dict[str, Any]) -> str:
+    """Build the internal command the AG-UI proxy sends after human approval."""
+    return f"{_APPROVED_PROPOSAL_PREFIX}\n{json.dumps(proposal, ensure_ascii=False)}"
+
+
+def _approved_proposal_from_input(
+    input_items: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    """Extract an approved-proposal execution command from the latest input turn."""
+    for item in reversed(input_items):
+        content = item.get("content") or ""
+        if _APPROVED_PROPOSAL_PREFIX not in content:
+            continue
+        payload = content.split(_APPROVED_PROPOSAL_PREFIX, 1)[1].strip()
+        try:
+            parsed = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _incident_request_from_approved_proposal(proposal: dict[str, Any]) -> str:
+    """Convert an approved proposal into a deterministic Incident-agent command."""
+    operation = str(proposal.get("operation") or "").lower()
+    if operation == "create":
+        fields = {
+            "short_description": proposal.get("short_description") or "",
+            "description": proposal.get("description") or "",
+            "assignment_group": proposal.get("assignment_group") or "",
+            "urgency": proposal.get("urgency") or "2",
+        }
+        return (
+            "APPROVED BY USER. Create the ServiceNow incident with exactly these "
+            f"fields: {json.dumps(fields, ensure_ascii=False)}"
+        )
+    if operation == "update":
+        fields = {
+            "incident_number": proposal.get("incident_number") or "",
+            "delta": proposal.get("delta") if isinstance(proposal.get("delta"), dict) else {},
+            "summary": proposal.get("summary") or "",
+        }
+        return (
+            "APPROVED BY USER. Update the ServiceNow incident with exactly this "
+            f"proposal: {json.dumps(fields, ensure_ascii=False)}"
+        )
+    return (
+        "APPROVED BY USER. Process this ServiceNow incident proposal exactly as "
+        f"specified: {json.dumps(proposal, ensure_ascii=False)}"
+    )
+
+
 def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
     """Run the single routing model pass: classify intent + pick one sub-agent.
 
@@ -698,12 +835,14 @@ def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
         arguments_out = arguments if isinstance(arguments, str) else json.dumps(arguments or {})
         if name == "manage_servicenow_incident":
             arguments_out = json.dumps({"request": sub_agent_input})
+        proposal = _build_servicenow_write_proposal(name, sub_agent_input)
         return RouteDecision(
             tool_name=name,
             agent_name=agent_name,
             sub_agent_input=sub_agent_input,
             call_id=getattr(item, "call_id", None) or f"call_{uuid.uuid4().hex[:24]}",
             arguments_json=arguments_out,
+            servicenow_write_proposal=proposal,
         )
 
     # No (known) tool call -> the model answered directly (clarifying question).
@@ -970,6 +1109,27 @@ class RelayOrchestrator(BaseAgent):
         return self._run(input_items)
 
     async def _run_stream(self, input_items: list[dict[str, str]]) -> AsyncIterator[AgentResponseUpdate]:
+        approved_proposal = _approved_proposal_from_input(input_items)
+        if approved_proposal is not None:
+            call_id = f"call_{uuid.uuid4().hex[:24]}"
+            incident_request = _incident_request_from_approved_proposal(approved_proposal)
+            yield AgentResponseUpdate(
+                contents=[
+                    Content.from_function_call(
+                        call_id,
+                        "manage_servicenow_incident",
+                        arguments=json.dumps({"request": incident_request}),
+                    )
+                ],
+                role="assistant",
+            )
+            async for item in _astream_prompt_agent(INCIDENT_AGENT_NAME, incident_request):
+                if not isinstance(item, _CitationsFrame):
+                    yield AgentResponseUpdate(
+                        contents=[Content.from_text(item)], role="assistant"
+                    )
+            return
+
         decision = await asyncio.to_thread(_route_intent, input_items)
         if decision.tool_name and decision.agent_name:
             # 1) Emit the handoff chip (function_call item -> UI "Calling X Agent").
@@ -983,6 +1143,21 @@ class RelayOrchestrator(BaseAgent):
                 ],
                 role="assistant",
             )
+            if decision.servicenow_write_proposal is not None:
+                yield AgentResponseUpdate(
+                    contents=[
+                        Content.from_function_call(
+                            f"call_{uuid.uuid4().hex[:24]}",
+                            SERVICENOW_WRITE_PROPOSAL_TOOL_NAME,
+                            arguments=json.dumps(
+                                decision.servicenow_write_proposal,
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ],
+                    role="assistant",
+                )
+                return
             # 2) Stream the sub-agent's answer through verbatim as the terminal text.
             #    A trailing _CitationsFrame (KB turns only) is emitted as a dedicated
             #    ``citations`` function_call item — a structured side-channel the UI
@@ -1012,11 +1187,32 @@ class RelayOrchestrator(BaseAgent):
             )
 
     async def _run(self, input_items: list[dict[str, str]]) -> AgentResponse:
+        approved_proposal = _approved_proposal_from_input(input_items)
+        if approved_proposal is not None:
+            text = await asyncio.to_thread(
+                _invoke_prompt_agent,
+                INCIDENT_AGENT_NAME,
+                _incident_request_from_approved_proposal(approved_proposal),
+            )
+            return AgentResponse(
+                messages=[Message("assistant", [Content.from_text(text)])]
+            )
+
         decision = await asyncio.to_thread(_route_intent, input_items)
         if decision.tool_name and decision.agent_name:
-            text = await asyncio.to_thread(
-                _invoke_prompt_agent, decision.agent_name, decision.sub_agent_input or ""
-            )
+            if decision.servicenow_write_proposal is not None:
+                text = json.dumps(
+                    {
+                        SERVICENOW_WRITE_PROPOSAL_TOOL_NAME: (
+                            decision.servicenow_write_proposal
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                text = await asyncio.to_thread(
+                    _invoke_prompt_agent, decision.agent_name, decision.sub_agent_input or ""
+                )
         else:
             text = decision.direct_text or _NO_ROUTE_FALLBACK
         return AgentResponse(

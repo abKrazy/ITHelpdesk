@@ -2,6 +2,38 @@
 
 ## Active Decisions
 
+### 2026-07-10: AG-UI live cutover complete — deploy-deps fix + full HITL verification
+
+**By:** Squad (Coordinator), for @abKrazy
+**What:** Completed the live cutover of the AG-UI + CopilotKit UI migration to env `ithelpdesksc` (swedencentral). Both services deployed and functionally verified end-to-end against the live ServiceNow dev instance.
+
+**Deploy-deps fix (root cause + resolution):**
+- `azd deploy api` failed in the App Service Oryx (Linux/py3.11) build with `ResolutionImpossible`. Root cause: `agent-framework==1.11.0` is a meta-package that pins `agent-framework-core[all]`; the `[all]` extra drags in `agent-framework-hyperlight` → `hyperlight-sandbox-backend-wasm`, which does not resolve on Oryx.
+- Fix: depend on `agent-framework-core==1.11.0` (no `[all]`) in `src/requirements.txt` and `pyproject.toml`. `agent-framework-ag-ui==1.0.0rc8` already depends on core (not the meta), and the AG-UI proxy only imports core primitives (BaseAgent, Content, AgentResponse, AgentResponseUpdate, Message, tool). Verified clean resolve + imports in a scratch venv, no hyperlight. Commit `b896a1d`.
+- The orchestrator container (separate Dockerfile in `src/orchestrator/`) was unaffected — it builds via ACR, not Oryx.
+
+**Postprovision note:** `azd provision --no-prompt` did NOT fire the postprovision hook (bicep-only run). The orchestrator republish (proposal-mode) lives in `scripts/postprovision.ps1` and had to be run manually. `azd deploy` runs pre/postDEPLOY hooks, not postPROVISION. Orchestrator now at hosted **v13** (proposal-mode); Triage v6 + Incident v6 unchanged (invariant preserved).
+
+**Live functional verification (against `app-ztk6zx5aedqtc` /agui, real ServiceNow):**
+- Status turn (read-only) → `route_orchestrator` → `manage_servicenow_incident`, streamed, **NOT gated** (no interrupt). ✓
+- File-a-ticket turn → `route_orchestrator` → `troubleshoot_from_knowledge_base` (Foundry IQ) with **citations** `【5:x†source】` + recommended Assignment Group; no ticket created until user confirms. ✓
+- Insist-on-ticket → write proposal → `servicenow_write_approval` **interrupt raised**. ✓
+- **APPROVE → real write executed: INC0010064 created, Assignment Group = Desktop Support** (confirms triage Assignment Group is passed through to the incident agent). ✓
+- **REJECT → "ServiceNow change cancelled. No incident was created or updated."** (no write). ✓
+
+**rc8 approval-resume contract (as-built, verified):** The live rc8 `function_approval_request` interrupt exposes the proposal at `interrupt.metadata.agent_framework.function_call.arguments.proposal_json` (string). The resume envelope is `[{interruptId, status:"resolved", payload:{approved|accepted: bool, proposal_json: string}}]`. rc8 reads `payload.get("accepted", payload.get("approved"))`, so the frontend's `approved` key is accepted; `proposal_json` MUST be a string (null fails schema validation with `APPROVAL_RESUME_INVALID_RESPONSE`). The frontend (`HelpdeskChat.tsx` / `agui.ts`) already builds this shape correctly.
+
+**Endpoints:**
+- UI (Node/CopilotKit): `https://app-ui-ztk6zx5aedqtc.azurewebsites.net` (200) — `AGUI_BACKEND_URL` → api `/agui`.
+- API (Python/FastAPI): `https://app-ztk6zx5aedqtc.azurewebsites.net` — `/agui` (POST-only, 405 on GET), `/healthz` 200. Legacy vanilla-JS UI replaced.
+- Both on shared Basic B2, alwaysOn.
+
+**Smoke tests added:** `scripts/agui_live_check.py` (ungated status + gated triage) and `scripts/agui_hitl_check.py` (multi-turn approve→execute). Useful for hackathon validation.
+
+**Why:** Completes the user-approved AG-UI migration and closes the reported bugs (triage output not shown, Assignment Group not passed to incident agent) with live proof. Invariant honored: all change confined to UI layer + Orchestrator; Incident (APIM MCP) + Triage (Foundry IQ) unchanged; Orchestrator remains a Foundry Hosted Agent.
+
+---
+
 # Decision — UI re-platform to AG-UI + CopilotKit with option-C HITL (BUILT, mock-validated, PRE-LIVE-CUTOVER)
 
 **Authors:** Morpheus (design), Trinity (spike + backend/orchestrator), Tank (infra), Switch (frontend), Dozer (QA/docs)

@@ -207,7 +207,7 @@ def build_triage_definition(
     if not kb_connection_name:
         raise ValueError("kb_connection_name is required.")
 
-    from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+    from azure.ai.projects.models import MCPTool, PromptAgentDefinition, Reasoning
 
     kb_tool = MCPTool(
         server_label="knowledge-base",
@@ -216,8 +216,17 @@ def build_triage_definition(
         allowed_tools=[KB_RETRIEVE_TOOL],
         project_connection_id=kb_connection_name,
     )
+    # Pin reasoning effort low for the triage answer-synthesis pass. The heavy
+    # lifting is the KB agentic retrieval (Search-side, already minimal effort);
+    # the model only needs to summarize retrieved steps + decide self-serve vs.
+    # escalate, which does not benefit from default (medium) reasoning and only
+    # adds latency. Override via TRIAGE_REASONING_EFFORT.
+    import os as _os
+
+    effort = _os.environ.get("TRIAGE_REASONING_EFFORT", "low").strip() or "low"
     return PromptAgentDefinition(
         model=chat_deployment,
         instructions=TRIAGE_INSTRUCTIONS,
         tools=[kb_tool],
+        reasoning=Reasoning(effort=effort),
     )

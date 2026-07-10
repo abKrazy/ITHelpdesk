@@ -57,28 +57,30 @@ Rules:
 - Keep responses concise. Include number, state, assignment group, urgency, and
   short description when available.
 
-Resolving an incident by its INC number (REQUIRED two-step pattern):
+Resolving an incident by its INC number:
 An INC number (e.g. INC0010043) is the ServiceNow "number" FIELD, NOT the
-record's "sys_id". The MCP get/patch/update/delete tools are keyed on sys_id, so
-you MUST resolve the sys_id first. NEVER pass an INC number where a sys_id is
-required — ServiceNow returns not-found/restricted even when the ticket exists.
-1. Resolve the sys_id by LISTING/querying the incident table. Call the MCP
-   query tool (queryTable) with:
+record's "sys_id". Always locate the incident by querying the incident table on
+the number first. Call the MCP query tool (queryTable) with:
      tableName = incident
      sysparm_query = number={INC}
      sysparm_limit = 1
-     sysparm_fields = sys_id,number,short_description,urgency,state,assignment_group
-   Read result[0].sys_id from the response.
+     sysparm_fields = sys_id,number,short_description,description,urgency,state,assignment_group,comments,work_notes
    - Conclude the incident "does not exist" ONLY when this query returns an
      EMPTY result array. A failed sys_id-keyed call does NOT mean the ticket is
-     missing — it means you skipped this resolve step.
-2. Apply the operation on the resolved sys_id:
-     - Status/read: getRecord on incident/{sys_id}.
-     - Update: patchRecord on incident/{sys_id} with only the changed fields
-       (e.g. {"urgency":"2"} for medium; urgency low=3, medium=2, high=1).
-       Confirm the change after the patch succeeds.
-This resolve-first pattern applies to BOTH status look-ups and updates that
-reference an incident by its INC number.
+     missing — it means you queried wrong.
+
+STATUS / READ look-ups (the common case) — SINGLE call, do NOT fetch again:
+The queryTable result above already contains number, state, assignment_group,
+urgency, short_description, and description. Answer the user's status question
+DIRECTLY from result[0]. Do NOT call getRecord afterwards — it only re-fetches
+data you already have and doubles the latency. A second lookup is never needed
+to report status.
+
+UPDATES by INC number — resolve sys_id, then patch:
+Read result[0].sys_id from the queryTable response, then call patchRecord on
+incident/{sys_id} with ONLY the changed fields (e.g. {"urgency":"2"} for medium;
+urgency low=3, medium=2, high=1). Confirm the change after the patch succeeds.
+NEVER pass an INC number where a sys_id is required.
 """
 
 
@@ -102,7 +104,7 @@ def build_incident_definition(
     if not mcp_connection_id:
         raise ValueError("mcp_connection_id is required.")
 
-    from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+    from azure.ai.projects.models import MCPTool, PromptAgentDefinition, Reasoning
 
     mcp_tool = MCPTool(
         server_label="servicenow-apim",
@@ -110,8 +112,17 @@ def build_incident_definition(
         require_approval="never",
         project_connection_id=mcp_connection_id,
     )
+    # Pin reasoning effort low: the incident agent's job is mechanical (parse the
+    # request, call ONE ServiceNow MCP tool, format the result), so the model's
+    # default (medium) reasoning just adds latency (~several seconds/turn) without
+    # improving correctness. Override via INCIDENT_REASONING_EFFORT if a deployment
+    # needs deeper reasoning. Values: none|minimal|low|medium|high|xhigh.
+    import os as _os
+
+    effort = _os.environ.get("INCIDENT_REASONING_EFFORT", "low").strip() or "low"
     return PromptAgentDefinition(
         model=chat_deployment,
         instructions=INCIDENT_INSTRUCTIONS,
         tools=[mcp_tool],
+        reasoning=Reasoning(effort=effort),
     )

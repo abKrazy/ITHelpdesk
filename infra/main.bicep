@@ -45,8 +45,9 @@ param location string
 param principalId string = ''
 
 // --- ServiceNow inputs (collected by scripts/preprovision) -------------------
-@description('ServiceNow instance base URL. Default is the accelerator dev instance.')
-param serviceNowInstanceUrl string = 'https://dev283128.service-now.com'
+@description('ServiceNow instance base URL (e.g. https://<your-instance>.service-now.com). Required — collected by scripts/preprovision; no default.')
+@minLength(1)
+param serviceNowInstanceUrl string
 
 @description('ServiceNow username used for Table API / MCP auth.')
 param serviceNowUsername string

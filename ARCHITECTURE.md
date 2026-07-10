@@ -15,7 +15,7 @@ ServiceNow incident behind a human-approval gate.
 
 **Languages:** Python backend/agents + Node 22/Next.js frontend. **Tests:** pytest
 and frontend build/lint. **IaC:** Bicep via `azd`.
-**ServiceNow instance:** `https://dev283128.service-now.com`.
+**ServiceNow instance:** supplied by the deployer at `azd up` time (required input; not stored in this repo).
 
 ## 2. Component diagram
 
@@ -111,7 +111,7 @@ _Prompt: "update urgency for INC0010027 to low"_
 | Azure login | `az login` / azd | — | Handled by azd. |
 | Subscription | azd built-in prompt | `AZURE_SUBSCRIPTION_ID` | |
 | Region | azd built-in prompt | `AZURE_LOCATION` | Bicep `location`. |
-| ServiceNow instance URL | `scripts/preprovision` | `SERVICENOW_INSTANCE_URL` | Default `https://dev283128.service-now.com`. |
+| ServiceNow instance URL | `scripts/preprovision` | `SERVICENOW_INSTANCE_URL` | **Required — prompted; no default.** `https://<your-instance>.service-now.com`. |
 | ServiceNow username | `scripts/preprovision` | `SERVICENOW_USERNAME` | → Key Vault secret. |
 | ServiceNow password | `scripts/preprovision` | `SERVICENOW_PASSWORD` | **Secure.** → Key Vault secret; never output. |
 

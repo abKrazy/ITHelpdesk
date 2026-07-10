@@ -212,10 +212,10 @@ When in doubt, deploy AI Foundry and APIM in the same region to avoid cross-regi
 
 ### 6. ServiceNow prerequisites
 
-- A **ServiceNow instance**. The assets target a Personal Developer Instance
-  (PDI): **`https://dev283128.service-now.com`** (see
-  [`assets/ServiceNow-instance-details.txt`](./assets/ServiceNow-instance-details.txt)).
-  Get your own free PDI at <https://developer.servicenow.com>.
+- A **ServiceNow instance** — use your own. A free **Personal Developer
+  Instance (PDI)** works well; get one at <https://developer.servicenow.com>.
+  You'll provide its base URL (`https://<your-instance>.service-now.com`) when
+  prompted during `azd up` — it is **not** stored in this repo.
 - A **ServiceNow user with the `itil` role** (or equivalent) — needs rights to
   **read, create, and update `incident` records** via the Table API.
 - The **Table API OpenAPI spec is already provided** at
@@ -262,8 +262,8 @@ azd up
 1. **Environment name** — a short name; drives `rg-<name>` and the resource token.
 2. **Azure subscription** — pick the one where you have Owner / UAA.
 3. **Region** — pick one satisfying the model + APIM availability above.
-4. **ServiceNow instance URL** — press Enter to accept the default
-   `https://dev283128.service-now.com`, or enter your own.
+4. **ServiceNow instance URL** — **required**; enter your instance base URL
+   (`https://<your-instance>.service-now.com`). There is no default.
 5. **ServiceNow username** — a user with the `itil` role.
 6. **ServiceNow password** — **entered securely (never echoed)**; stored in Key Vault.
 

@@ -3,7 +3,7 @@
 # Owner: Tank (plumbing). Idempotent: only prompts for values not already set.
 # =============================================================================
 # Sets these azd environment values (consumed by infra/main.parameters.json):
-#   SERVICENOW_INSTANCE_URL  (default: https://dev283128.service-now.com)
+#   SERVICENOW_INSTANCE_URL  (required — no default; prompts until provided)
 #   SERVICENOW_USERNAME
 #   SERVICENOW_PASSWORD      (secret — stored in the azd .env; flows to Key Vault)
 # -----------------------------------------------------------------------------
@@ -23,11 +23,11 @@ function Set-AzdEnvValue([string]$key, [string]$value) {
   }
 }
 
-$defaultInstance = 'https://dev283128.service-now.com'
-
 if (-not (Get-AzdEnvValue 'SERVICENOW_INSTANCE_URL')) {
-  $inst = Read-Host "ServiceNow instance URL [$defaultInstance]"
-  if ([string]::IsNullOrWhiteSpace($inst)) { $inst = $defaultInstance }
+  do {
+    $inst = (Read-Host "ServiceNow instance URL (e.g. https://<your-instance>.service-now.com)").Trim()
+    if ([string]::IsNullOrWhiteSpace($inst)) { Write-Host "  A ServiceNow instance URL is required." }
+  } while ([string]::IsNullOrWhiteSpace($inst))
   Set-AzdEnvValue 'SERVICENOW_INSTANCE_URL' $inst
 }
 

@@ -12,7 +12,7 @@
       "value": "${AZURE_PRINCIPAL_ID}"
     },
     "serviceNowInstanceUrl": {
-      "value": "${SERVICENOW_INSTANCE_URL=https://dev283128.service-now.com}"
+      "value": "${SERVICENOW_INSTANCE_URL}"
     },
     "serviceNowUsername": {
       "value": "${SERVICENOW_USERNAME}"

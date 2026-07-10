@@ -7,14 +7,15 @@
 # -----------------------------------------------------------------------------
 set -e
 
-DEFAULT_INSTANCE="https://dev283128.service-now.com"
-
 get_val() { azd env get-value "$1" 2>/dev/null || true; }
 
 if [ -z "$(get_val SERVICENOW_INSTANCE_URL)" ]; then
-  printf "ServiceNow instance URL [%s]: " "$DEFAULT_INSTANCE"
-  read -r INST
-  [ -z "$INST" ] && INST="$DEFAULT_INSTANCE"
+  INST=""
+  while [ -z "$INST" ]; do
+    printf "ServiceNow instance URL (e.g. https://<your-instance>.service-now.com): "
+    read -r INST
+    [ -z "$INST" ] && echo "  A ServiceNow instance URL is required."
+  done
   azd env set SERVICENOW_INSTANCE_URL "$INST" >/dev/null
 fi
 

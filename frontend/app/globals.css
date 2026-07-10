@@ -132,18 +132,36 @@ textarea {
   transform: translateX(-50%);
   width: min(100%, 792px);
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   padding: 16px;
   background: linear-gradient(180deg, rgb(243 244 246 / 0), var(--bg) 18%);
 }
 
-.composer input {
+.composer textarea {
   flex: 1;
-  padding: 12px;
+  min-height: 52px;
+  max-height: 200px;
+  padding: 14px 16px;
   border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  font-size: 15px;
+  border-radius: 12px;
+  font-size: 16px;
+  line-height: 1.45;
   background: #fff;
+  resize: none;
+  overflow-y: auto;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.composer textarea:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 0.15);
+}
+
+.composer textarea:disabled {
+  background: #f1f5f9;
+  color: var(--muted);
 }
 
 .composer button,
@@ -157,14 +175,24 @@ textarea {
   cursor: pointer;
 }
 
-.composer button:hover,
+.composer button {
+  min-height: 52px;
+  padding: 0 22px;
+  border-radius: 12px;
+  font-weight: 600;
+  transition: background 0.15s ease;
+}
+
+.composer button:hover:not(:disabled),
 .approval-actions button:hover {
   background: var(--blue-dark);
 }
 
 .composer button:disabled {
-  opacity: .6;
-  cursor: default;
+  background: #cbd5e1;
+  color: #eef2f7;
+  opacity: 1;
+  cursor: not-allowed;
 }
 
 .approval-card {

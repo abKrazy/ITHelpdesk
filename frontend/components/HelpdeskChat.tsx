@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { Interrupt, ResumeEntry } from "@ag-ui/core";
 import {
   ChatMessage,
@@ -30,6 +30,18 @@ export function HelpdeskChat() {
   const [activeChip, setActiveChip] = useState<string | null>(null);
   const messagesRef = useRef(messages);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoGrow = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, []);
+
+  useEffect(() => {
+    autoGrow();
+  }, [input, autoGrow]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -162,10 +174,20 @@ export function HelpdeskChat() {
     };
 
     setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
     await runAgent(assistantMessage.id);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (input.trim() && !isRunning) {
+        event.currentTarget.form?.requestSubmit();
+      }
+    }
   };
 
   const respondToApproval = async (messageId: string, approval: PendingApproval, approved: boolean, proposalJson: string) => {
@@ -221,12 +243,15 @@ export function HelpdeskChat() {
         <div ref={scrollRef} />
       </section>
       <form className="composer" onSubmit={submitMessage}>
-        <input
+        <textarea
+          ref={textareaRef}
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="Type your request…"
+          onKeyDown={handleKeyDown}
+          placeholder="Type your request…  (Enter to send, Shift+Enter for a new line)"
           aria-label="Type your request"
           autoComplete="off"
+          rows={1}
           disabled={isRunning}
         />
         <button type="submit" disabled={isRunning || !input.trim()}>

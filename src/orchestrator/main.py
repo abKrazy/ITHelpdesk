@@ -86,6 +86,18 @@ TRIAGE_MODEL = (
 )
 TRIAGE_AGENT_NAME = os.environ.get("TRIAGE_AGENT_NAME", "it-helpdesk-triage")
 INCIDENT_AGENT_NAME = os.environ.get("INCIDENT_AGENT_NAME", "it-helpdesk-incident")
+# Model for the orchestrator's OWN routing pass (intent classification + tool pick).
+# Routing is a lightweight decision, so it can run on a smaller/faster deployment
+# (e.g. gpt-5.4-mini) than the incident agent — the dominant per-turn latency is
+# the routing model's "thinking" time, and a mini cuts it substantially while
+# keeping routing correct. Unlike sub-agent (agent_reference) calls, the routing
+# pass invokes a plain model deployment, so it is NOT bound to MODEL. Falls back to
+# MODEL when unset (routing shares the orchestrator's main deployment).
+ROUTING_MODEL = (
+    os.environ.get("ROUTING_MODEL_DEPLOYMENT_NAME")
+    or os.environ.get("AZURE_OPENAI_ROUTING_CHAT_DEPLOYMENT")
+    or MODEL
+)
 PORT = int(os.environ.get("PORT", "8088"))
 ORCHESTRATOR_CONTRACT_VERSION = "agui-proposal-mode-v1"
 
@@ -798,7 +810,7 @@ def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
     """
     client = _get_openai_client()
     kwargs: dict[str, Any] = {
-        "model": MODEL,
+        "model": ROUTING_MODEL,
         "instructions": ROUTING_INSTRUCTIONS,
         "input": input_items or "",
         "tools": ROUTING_TOOLS,
@@ -812,9 +824,9 @@ def _route_intent(input_items: list[dict[str, str]]) -> RouteDecision:
 
     tracer = _get_tracer()
     if tracer is not None:
-        with tracer.start_as_current_span(f"chat {MODEL}") as span:
+        with tracer.start_as_current_span(f"chat {ROUTING_MODEL}") as span:
             span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("gen_ai.request.model", MODEL)
+            span.set_attribute("gen_ai.request.model", ROUTING_MODEL)
             span.set_attribute("gen_ai.agent.name", SERVICE_NAME)
             resp = client.responses.create(**kwargs)
     else:

@@ -167,6 +167,13 @@ def create_hosted_orchestrator() -> None:
             "AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", required=False, default=None
         )
         or None,
+        # Routing pass runs on the smaller/faster deployment (defaults to triage's
+        # mini) to cut per-turn latency; incident stays on the main deployment.
+        routing_chat_deployment=env(
+            "ROUTING_MODEL_DEPLOYMENT_NAME", required=False, default=None
+        )
+        or env("AZURE_OPENAI_TRIAGE_CHAT_DEPLOYMENT", required=False, default=None)
+        or None,
         # Orchestrator's own reasoning effort (default low). Forwarded so `azd up`
         # reproduces the latency tuning idempotently; retune via `azd env set
         # ORCHESTRATOR_REASONING_EFFORT=...` without a code change.

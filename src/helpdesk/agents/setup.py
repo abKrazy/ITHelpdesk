@@ -341,6 +341,7 @@ def create_hosted_orchestrator(
     chat_deployment: str,
     image: str,
     triage_chat_deployment: str | None = None,
+    routing_chat_deployment: str | None = None,
     reasoning_effort: str | None = None,
     cpu: str = "1",
     memory: str = "2Gi",
@@ -403,6 +404,16 @@ def create_hosted_orchestrator(
         # passed model and the referenced agent's own model with 400
         # invalid_payload. Falls back to the main deployment when triage shares it.
         "TRIAGE_MODEL_DEPLOYMENT_NAME": triage_chat_deployment or chat_deployment,
+        # The routing pass (intent classification + tool pick) is lightweight and
+        # runs on a plain model deployment (not an agent_reference), so it is not
+        # bound to the main chat deployment. Default it to the smaller triage
+        # deployment (e.g. gpt-5.4-mini) when available — this cuts the dominant
+        # per-turn routing latency roughly in half while keeping routing correct.
+        # The incident sub-agent still runs on the main chat_deployment. Override
+        # via `azd env set ROUTING_MODEL_DEPLOYMENT_NAME=...` without a rebuild.
+        "ROUTING_MODEL_DEPLOYMENT_NAME": (
+            routing_chat_deployment or triage_chat_deployment or chat_deployment
+        ),
         "TRIAGE_AGENT_NAME": _AGENT_NAMES[0],
         "INCIDENT_AGENT_NAME": _AGENT_NAMES[1],
         # Orchestrator's own gpt-5.x reasoning effort (both per-turn passes). LOW

@@ -2,6 +2,29 @@
 
 ## Active Decisions
 
+### 2026-07-10: Agent answers render as structured Markdown in the UI
+**By:** Squad (Coordinator)
+**What:** Assistant messages were shown as flat plain text. Added `react-markdown`
++ `remark-gfm` to the frontend and render assistant bubbles through it (user
+messages stay plain text; links open in a new tab). Styled all Markdown block
+elements in `globals.css` under `.message-text.markdown` (headings, lists, code,
+`pre`, blockquote, `hr`, tables) and switched the assistant bubble off
+`white-space: pre-wrap`. Improved the citations "Sources" block to emit a Markdown
+divider + bold heading + bullet list. Nudged the triage + incident agent
+instructions to emit Markdown (numbered troubleshooting steps, **bold** field
+labels, bulleted ticket details, `**Recommended team:**` line).
+**Why:** User: agent outputs "just plain text, and lacks structure." Rendering
+Markdown gives real structure; instructing the agents to format ensures there is
+structure to render.
+**Verified:** Deployed to app-ui (B2, no B3 dance). Live CSS chunk contains
+`.message-text.markdown` rules; backend queries confirmed the agents now emit
+bold labels + bulleted/numbered lists. Sub-agents re-published: triage v8,
+incident v9.
+**Note:** Under Next 16 + Turbopack, built CSS is served from
+`/_next/static/chunks/*.css` (NOT `/_next/static/css/`) — use that path when
+verifying live styles.
+
+
 ### 2026-07-10: Latency round 2 — trace-driven sub-agent tuning
 **By:** Squad (Coordinator)
 **What:** Cut per-turn latency using App Insights trace data rather than guesses.

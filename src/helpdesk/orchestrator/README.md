@@ -1,4 +1,4 @@
-# src/orchestrator — Orchestrator Agent (Foundry Hosted Agent)
+# src/helpdesk/orchestrator — Orchestrator Agent (Foundry Hosted Agent)
 
 **Owner:** Trinity (AI / Agent Engineer)
 
@@ -8,8 +8,8 @@ deployed as a **Hosted Agent in Azure AI Foundry**. It is the single entry point
 end users talk to (via the UI). It does NOT resolve tickets itself; it **routes**:
 
 1. Receives the user request from the UI.
-2. Hands off to the **Triage agent** (`src/agents`) to try KB resolution.
-3. If unresolved, hands off to the **Incident agent** (`src/agents`) to
+2. Hands off to the **Triage agent** (`src/helpdesk/agents`) to try KB resolution.
+3. If unresolved, hands off to the **Incident agent** (`src/helpdesk/agents`) to
    create/assign/check/update ServiceNow incidents via the APIM MCP endpoint.
 4. Streams the consolidated response back to the UI.
 
@@ -33,5 +33,5 @@ as a Foundry hosted agent, writing its agent ID back to the azd environment
 (`AZURE_AI_ORCHESTRATOR_AGENT_ID`).
 
 ## Boundary
-Routing + handoff only. KB grounding logic lives in `src/agents`. ServiceNow
+Routing + handoff only. KB grounding logic lives in `src/helpdesk/agents`. ServiceNow
 call details live in `src/servicenow`.

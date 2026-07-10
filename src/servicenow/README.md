@@ -25,5 +25,5 @@ Everything about talking to ServiceNow **through APIM's MCP endpoint**:
 - `AZURE_CLIENT_ID`
 
 ## Boundary
-Transport + ServiceNow domain mapping only. Agent composition → `src/agents`.
+Transport + ServiceNow domain mapping only. Agent composition → `src/helpdesk/agents`.
 The APIM resource + MCP exposure itself → `infra/modules/apim.bicep`.

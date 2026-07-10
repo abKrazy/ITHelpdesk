@@ -17,10 +17,11 @@
 | `infra/modules/search.bicep` | Tank | AI Search + data-plane roles |
 | `infra/modules/foundry.bicep` | Tank | Foundry account/project + model deployments |
 | `infra/modules/apim.bicep` | **Switch** (API/MCP config) + Tank (resource) | Developer-tier APIM, OpenAPI import, MCP endpoint |
-| `infra/modules/appservice.bicep` | Tank | plan + Web App (`azd-service-name: ui`) |
-| `src/orchestrator/**` | Trinity | Agent Framework hosted orchestrator |
-| `src/agents/**` | Trinity | triage + incident agent defs |
-| `src/ui/**` | Trinity | App Service chat UI |
+| `infra/modules/appservice.bicep` | Tank | shared plan + two Web Apps (`azd-service-name: api` Python AG-UI backend, `azd-service-name: ui` Node/Next.js frontend) |
+| `src/helpdesk/orchestrator/**` | Trinity | Agent Framework hosted orchestrator |
+| `src/helpdesk/agents/**` | Trinity | triage + incident agent defs |
+| `src/helpdesk/ui/**` | Trinity | FastAPI AG-UI backend (`/agui`) |
+| `frontend/**` | Switch | Next.js + CopilotKit customer UI |
 | `src/servicenow/**` | Switch | MCP client + ServiceNow field mapping |
 | `src/shared/**` | shared (Morpheus reviews) | config/auth/logging |
 | `scripts/preprovision.*` | Tank | ServiceNow input capture |

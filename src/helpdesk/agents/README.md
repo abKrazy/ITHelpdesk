@@ -1,4 +1,4 @@
-# src/agents — Specialist Foundry Agents (Triage + Incident)
+# src/helpdesk/agents — Specialist Foundry Agents (Triage + Incident)
 
 **Owner:** Trinity (AI / Agent Engineer)
 
@@ -29,4 +29,4 @@ Orchestrator hands off to. Each does **one job**.
 
 ## Boundary
 Agent definitions + KB grounding. Raw ServiceNow/MCP transport → `src/servicenow`.
-Routing between agents → `src/orchestrator`.
+Routing between agents → `src/helpdesk/orchestrator`.

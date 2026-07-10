@@ -260,7 +260,7 @@ module apim './modules/apim.bicep' = {
   }
 }
 
-// 10) App Service: the customer-facing UI ------------------------ Owner: Tank
+// 10) App Service: shared plan + API/UI apps --------------------- Owner: Tank
 module appservice './modules/appservice.bicep' = {
   name: 'appservice'
   scope: rg
@@ -268,7 +268,10 @@ module appservice './modules/appservice.bicep' = {
     location: location
     tags: tags
     appServicePlanName: '${abbrs.webServerFarms}${resourceToken}'
-    appServiceName: '${abbrs.webSitesAppService}${resourceToken}'
+    // Keep the current deployed site name for the Python app so the cutover can
+    // re-tag the existing resource in place from azd-service-name=ui -> api.
+    apiAppServiceName: '${abbrs.webSitesAppService}${resourceToken}'
+    uiAppServiceName: '${abbrs.webSitesAppService}ui-${resourceToken}'
     managedIdentityResourceId: identity.outputs.resourceId
     managedIdentityClientId: identity.outputs.clientId
     keyVaultName: keyvault.outputs.name
@@ -395,8 +398,11 @@ output APIM_SUBSCRIPTION_KEY string = apim.outputs.mcpSubscriptionKey
 output SERVICENOW_MCP_SUBSCRIPTION_KEY string = apim.outputs.mcpSubscriptionKey
 output SERVICENOW_INSTANCE_URL string = serviceNowInstanceUrl
 
-// -- App Service (the UI) --
+// -- App Service (API + UI) --
 output AZURE_APP_SERVICE_NAME string = appservice.outputs.name
+output AZURE_UI_APP_SERVICE_NAME string = appservice.outputs.name
+output AZURE_API_APP_SERVICE_NAME string = appservice.outputs.apiName
+output SERVICE_API_URI string = appservice.outputs.apiUri
 output SERVICE_UI_URI string = appservice.outputs.uri
 
 // -- Monitoring --

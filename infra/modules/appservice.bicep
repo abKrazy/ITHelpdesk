@@ -1,12 +1,11 @@
 // =============================================================================
-// modules/appservice.bicep — STUB (Owner: Tank)
-// Linux App Service plan + Web App hosting the customer-facing UI
-// (src/helpdesk/ui, deployed from the ./src root — see azure.yaml).
-// Runs as the user-assigned managed identity. App settings wire the UI to the
-// Foundry project (orchestrator) and expose the ServiceNow MCP endpoint. Secrets
-// are referenced from Key Vault, never inlined.
-// Signature LOCKED by main.bicep. The web app MUST be tagged
-// 'azd-service-name: ui' so `azd deploy` targets it.
+// modules/appservice.bicep — App Service topology (Owner: Tank)
+// One shared Linux Basic B2 App Service plan hosting two azd services:
+//   api — existing Python FastAPI backend, now exposing the AG-UI endpoint.
+//   ui  — Node/Next.js CopilotKit frontend built by Oryx.
+// The Python API runs as the user-assigned managed identity. App settings wire it
+// to Foundry/Search/APIM/Key Vault. The Node UI talks to the API via
+// AGUI_BACKEND_URL and is tagged separately so `azd deploy ui` targets it.
 // Prefer AVM: br/public:avm/res/web/serverfarm + br/public:avm/res/web/site
 // =============================================================================
 
@@ -19,8 +18,11 @@ param tags object
 @description('App Service plan name.')
 param appServicePlanName string
 
-@description('Web App name.')
-param appServiceName string
+@description('Python API Web App name.')
+param apiAppServiceName string
+
+@description('Node/Next.js UI Web App name.')
+param uiAppServiceName string
 
 @description('Resource ID of the runtime managed identity.')
 param managedIdentityResourceId string
@@ -73,11 +75,11 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   }
 }
 
-resource webApp 'Microsoft.Web/sites@2023-12-01' = {
-  name: appServiceName
+resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
+  name: apiAppServiceName
   location: location
   tags: union(tags, {
-    'azd-service-name': 'ui'
+    'azd-service-name': 'api'
   })
   kind: 'app,linux'
   identity: {
@@ -157,6 +159,45 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
+resource uiApp 'Microsoft.Web/sites@2023-12-01' = {
+  name: uiAppServiceName
+  location: location
+  tags: union(tags, {
+    'azd-service-name': 'ui'
+  })
+  kind: 'app,linux'
+  properties: {
+    serverFarmId: appServicePlan.id
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'NODE|22-lts'
+      alwaysOn: true
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      appSettings: [
+        {
+          name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
+          value: 'true'
+        }
+        {
+          name: 'ENABLE_ORYX_BUILD'
+          value: 'true'
+        }
+        {
+          name: 'AGUI_BACKEND_URL'
+          value: 'https://${apiApp.properties.defaultHostName}/agui'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: applicationInsightsConnectionString
+        }
+      ]
+    }
+  }
+}
+
 // --- OUTPUTS (contract — do not change signatures) ---------------------------
-output name string = webApp.name
-output uri string = 'https://${webApp.properties.defaultHostName}'
+output name string = uiApp.name
+output uri string = 'https://${uiApp.properties.defaultHostName}'
+output apiName string = apiApp.name
+output apiUri string = 'https://${apiApp.properties.defaultHostName}'

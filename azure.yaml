@@ -11,7 +11,8 @@
 #   - infra/ Bicep .......................... Tank
 #   - src/orchestrator, src/agents .......... Trinity
 #   - src/servicenow (MCP client/config) .... Switch
-#   - src/helpdesk/ui ....................... Trinity (UI) / Morpheus (shape)
+#   - frontend .............................. Switch (CopilotKit UI)
+#   - src/helpdesk/ui ....................... Trinity (AG-UI API backend)
 #   - scripts/ hooks ........................ Tank (infra plumbing) + Trinity (agent creation)
 #
 name: servicenow-it-helpdesk-agent
@@ -37,14 +38,24 @@ infra:
   module: main
 
 services:
-  # The customer-facing chat UI on Azure App Service. End users talk to the
-  # UI, which forwards to the Orchestrator (Foundry hosted agent).
-  ui:
+  # The Python FastAPI backend on Azure App Service. It exposes the AG-UI
+  # endpoint and keeps the Foundry/Search/Key Vault/App Insights wiring.
+  api:
     # Deploy the whole ./src tree so BOTH runtime packages (helpdesk + servicenow)
     # ship in the package. Oryx builds from src/requirements.txt and puts ./src on
     # sys.path, so the app loads as `helpdesk.ui.app:app` (see appservice.bicep).
     project: ./src
     language: python
+    host: appservice
+    # host resource is tagged azd-service-name: 'api' in infra/modules/appservice.bicep
+
+  # The customer-facing CopilotKit/Next.js UI on Azure App Service. The app reads
+  # AGUI_BACKEND_URL server-side to reach the Python API's /agui endpoint.
+  ui:
+    # Placeholder path for Switch's CopilotKit frontend. The Next.js start script
+    # must bind to process.env.PORT; Next output: "standalone" is recommended.
+    project: ./frontend
+    language: js
     host: appservice
     # host resource is tagged azd-service-name: 'ui' in infra/modules/appservice.bicep
 

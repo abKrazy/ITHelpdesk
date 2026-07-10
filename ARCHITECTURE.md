@@ -22,13 +22,16 @@ and frontend build/lint. **IaC:** Bicep via `azd`.
 ```mermaid
 flowchart TD
     User([End User]) -->|chat| UI[Node/Next.js UI App Service<br/>frontend<br/>CopilotKit]
-    UI -->|AGUI_BACKEND_URL<br/>/agui| API[Python API App Service<br/>src/helpdesk/ui<br/>AG-UI proxy]
-    API -->|hosted-agent endpoint| ORCH[Orchestrator Agent<br/>Foundry Hosted Agent]
+    UI <-->|AG-UI protocol over SSE<br/>AGUI_BACKEND_URL /agui| API[Python API App Service<br/>src/helpdesk/ui<br/>AG-UI proxy]
+    API <-->|hosted-agent endpoint · stream| ORCH[Orchestrator Agent<br/>Foundry Hosted Agent<br/>routing + HITL gate]
 
     subgraph Foundry[Azure AI Foundry Project]
         ORCH -->|handoff| TRIAGE[Triage Agent<br/>Foundry Prompt Agent]
         ORCH -->|handoff| INC[Incident Agent<br/>Foundry Prompt Agent]
     end
+
+    ORCH -. ServiceNow write proposal .-> HITL{{Human approval<br/>AG-UI interrupt · CopilotKit card}}
+    HITL -. approve resumes · reject cancels .-> INC
 
     TRIAGE -->|Foundry IQ / Azure AI Search| SEARCH[(Azure AI Search<br/>index: it-helpdesk-kb)]
     SEARCH -. indexed from .- STG[(Azure Storage<br/>container: kbdocs)]
@@ -200,7 +203,7 @@ param/output signatures.
    → storage → search → foundry → apim → appservice); gets `azd provision` green.
 2. **Switch** implements APIM OpenAPI import + MCP exposure + `src/servicenow`
    client in parallel (mock the endpoint until APIM exists).
-3. **Trinity** implements `src/orchestrator`, `src/agents`, and the Python AG-UI
+3. **Trinity** implements `src/helpdesk/orchestrator`, `src/helpdesk/agents`, and the Python AG-UI
    backend in `src/helpdesk/ui`, plus the `postprovision` agent-creation +
    index-build steps, coding against the outputs contract (mock env vars until
    infra is live).

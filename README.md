@@ -24,13 +24,16 @@ the ServiceNow Table API as MCP tools), and deployed end-to-end with the
 ```mermaid
 flowchart TD
     User([End User]) -->|chat| UI[Node/Next.js UI App Service<br/>frontend<br/>CopilotKit]
-    UI -->|AGUI_BACKEND_URL<br/>/agui| API[Python API App Service<br/>src/helpdesk/ui<br/>AG-UI proxy]
-    API -->|invoke| ORCH[Orchestrator Agent<br/>Foundry Hosted Agent]
+    UI <-->|AG-UI protocol over SSE<br/>AGUI_BACKEND_URL /agui| API[Python API App Service<br/>src/helpdesk/ui<br/>AG-UI proxy]
+    API <-->|invoke · stream| ORCH[Orchestrator Agent<br/>Foundry Hosted Agent<br/>routing + HITL gate]
 
     subgraph Foundry[Azure AI Foundry Project]
         ORCH -->|handoff| TRIAGE[Triage Agent<br/>Foundry Prompt Agent]
         ORCH -->|handoff| INC[Incident Agent<br/>Foundry Prompt Agent]
     end
+
+    ORCH -. ServiceNow write proposal .-> HITL{{Human approval<br/>AG-UI interrupt · CopilotKit card}}
+    HITL -. approve resumes · reject cancels .-> INC
 
     TRIAGE -->|Foundry IQ / Azure AI Search| SEARCH[(Azure AI Search<br/>index: it-helpdesk-kb)]
     SEARCH -. indexed from .- STG[(Azure Storage<br/>container: kbdocs)]

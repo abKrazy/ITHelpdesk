@@ -1,18 +1,21 @@
-"""FastAPI UI contract tests via Starlette's TestClient (mock mode).
+"""FastAPI backend contract tests via Starlette's TestClient (mock mode).
 
-The App Service UI (``src/helpdesk/ui/app.py``) is the customer-facing front
-door: it renders the chat page and forwards messages to the Orchestrator. These
-tests exercise the real ASGI app in-process (no network, no Azure) and assert the
-health probe plus the ``/api/chat`` route/reply contract for all 3 sample prompts
-(``assets/Sample-Prompts.txt``), which is exactly what App Service + the browser
-depend on.
+The App Service ``api`` process (``src/helpdesk/ui/app.py``) exposes a single
+**AG-UI** endpoint (``POST /agui``) that the CopilotKit / Next.js frontend calls,
+plus a ``/healthz`` liveness probe. These tests exercise the real ASGI app
+in-process (no network, no Azure) and assert the AG-UI contract — sub-agent
+handoff tool pairs, KB citations, and the ServiceNow human-approval interrupt
+(approve / reject) — using the sample prompts from ``assets/Sample-Prompts.txt``.
+
+Deterministic orchestrator routing for those same prompts is covered separately
+in ``test_orchestrator_flows.py``.
 """
 
 from __future__ import annotations
 
-import json
-import importlib
 import asyncio
+import importlib
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -37,106 +40,7 @@ def test_healthz_liveness_probe(client: TestClient) -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_index_page_renders(client: TestClient) -> None:
-    resp = client.get("/")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers["content-type"]
-    assert resp.text.strip(), "index page should not be empty"
-
-
-def test_chat_lookup_prompt(client: TestClient) -> None:
-    """Prompt 1 — status lookup routes to the incident agent."""
-    resp = client.post("/api/chat", json={"message": "lookup details for incident INC0000057"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["route"] == ["incident"]
-    assert "INC0000057" in body["reply"]
-    assert "State:" in body["reply"]
-
-
-def test_chat_create_prompt(client: TestClient) -> None:
-    """Prompt 2 — triage offers KB steps before creating."""
-    resp = client.post(
-        "/api/chat", json={"message": "Unable to log into Epic. Create a new incident."}
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["route"] == ["triage"]
-    assert "Identity and Access Management" in body["reply"]
-    assert "reply 'go ahead'" in body["reply"]
-
-
-def test_chat_confirmation_uses_history(client: TestClient) -> None:
-    original = "my laptop is running slow. please file a ticket."
-    offer_resp = client.post("/api/chat", json={"message": original})
-    offer = offer_resp.json()["reply"]
-
-    resp = client.post(
-        "/api/chat",
-        json={
-            "message": "go ahead",
-            "history": [
-                {"role": "user", "content": original},
-                {"role": "assistant", "content": offer},
-            ],
-        },
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["route"] == ["triage", "incident"]
-    assert "Created incident INC" in body["reply"]
-    assert "Desktop Support" in body["reply"]
-
-
-def test_chat_update_prompt(client: TestClient) -> None:
-    """Prompt 3 — urgency update routes to the incident agent."""
-    resp = client.post("/api/chat", json={"message": "update urgency for INC0010027 to low"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["route"] == ["incident"]
-    assert "INC0010027" in body["reply"]
-    assert "Low" in body["reply"]
-
-
-def test_chat_response_schema(client: TestClient) -> None:
-    """The chat endpoint always returns {reply: str, route: list[str]}."""
-    resp = client.post("/api/chat", json={"message": "How do I reset my forgotten password?"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert set(body) == {"reply", "route"}
-    assert isinstance(body["reply"], str) and body["reply"]
-    assert isinstance(body["route"], list) and all(isinstance(r, str) for r in body["route"])
-    # A KB-answerable question resolves via triage only (no ticket).
-    assert body["route"] == ["triage"]
-
-
-def test_chat_orchestrator_failure_returns_json_error(client: TestClient) -> None:
-    """A downstream orchestrator failure is rendered as parseable chat JSON."""
-
-    class FailingOrchestrator:
-        def run(self, _message: str, history=None) -> None:
-            raise RuntimeError("MCP endpoint unreachable")
-
-    previous = app.state.orchestrator
-    app.state.orchestrator = FailingOrchestrator()
-    try:
-        resp = client.post("/api/chat", json={"message": "lookup INC0000057"})
-    finally:
-        app.state.orchestrator = previous
-
-    assert resp.status_code == 200
-    assert "application/json" in resp.headers["content-type"]
-    body = resp.json()
-    assert body["route"] == ["error"]
-    assert body["error"] == "MCP endpoint unreachable"
-    assert "couldn't reach the ServiceNow backend" in body["reply"]
-
-
-def test_chat_requires_message_field(client: TestClient) -> None:
-    """A malformed body (missing 'message') is rejected with 422, not a 500."""
-    resp = client.post("/api/chat", json={})
-    assert resp.status_code == 422
+# --- AG-UI protocol helpers -------------------------------------------------
 
 
 def _parse_sse(body: str) -> list[dict]:
@@ -184,235 +88,13 @@ def _interrupt(events: list[dict]) -> dict:
     return outcome["interrupts"][0]
 
 
-def test_chat_stream_yields_tokens_then_done(client: TestClient) -> None:
-    """The streaming endpoint emits multiple token frames then a done frame.
-
-    Mock mode chunks the reply by word, so the browser exercises the same
-    incremental token-rendering path used against the live hosted orchestrator.
-    """
-    with client.stream(
-        "POST",
-        "/api/chat/stream",
-        json={"message": "lookup details for incident INC0000057"},
-    ) as resp:
-        assert resp.status_code == 200
-        assert "text/event-stream" in resp.headers["content-type"]
-        body = "".join(resp.iter_text())
-
-    events = _parse_sse(body)
-    tokens = [e for e in events if e["type"] == "token"]
-    done = [e for e in events if e["type"] == "done"]
-
-    assert len(tokens) > 1, "expected the reply to arrive as multiple token frames"
-    assert len(done) == 1, "expected exactly one terminal 'done' frame"
-    assert done[0]["route"] == ["incident"]
-
-    reply = "".join(t["text"] for t in tokens)
-    assert "INC0000057" in reply
-    assert "State:" in reply
-
-
-def test_chat_stream_confirmation_uses_history(client: TestClient) -> None:
-    """History threading works identically on the streaming endpoint."""
-    original = "my laptop is running slow. please file a ticket."
-    offer = client.post("/api/chat", json={"message": original}).json()["reply"]
-
-    with client.stream(
-        "POST",
-        "/api/chat/stream",
-        json={
-            "message": "go ahead",
-            "history": [
-                {"role": "user", "content": original},
-                {"role": "assistant", "content": offer},
-            ],
-        },
-    ) as resp:
-        assert resp.status_code == 200
-        body = "".join(resp.iter_text())
-
-    events = _parse_sse(body)
-    done = next(e for e in events if e["type"] == "done")
-    assert done["route"] == ["triage", "incident"]
-    reply = "".join(e["text"] for e in events if e["type"] == "token")
-    assert "Created incident INC" in reply
-
-
-def test_chat_stream_failure_yields_error_frame(client: TestClient) -> None:
-    """A downstream failure is delivered as a structured 'error' frame, not a 500."""
-
-    class FailingOrchestrator:
-        def run(self, _message: str, history=None) -> None:
-            raise RuntimeError("MCP endpoint unreachable")
-
-    previous = app.state.orchestrator
-    app.state.orchestrator = FailingOrchestrator()
-    try:
-        with client.stream(
-            "POST", "/api/chat/stream", json={"message": "lookup INC0000057"}
-        ) as resp:
-            assert resp.status_code == 200
-            body = "".join(resp.iter_text())
-    finally:
-        app.state.orchestrator = previous
-
-    events = _parse_sse(body)
-    error = next(e for e in events if e["type"] == "error")
-    assert error["error"] == "MCP endpoint unreachable"
-    assert "couldn't reach the ServiceNow backend" in error["text"]
-
-
-def _collect_stream(client: TestClient, payload: dict) -> list[dict]:
-    with client.stream("POST", "/api/chat/stream", json=payload) as resp:
-        assert resp.status_code == 200
-        body = "".join(resp.iter_text())
-    return _parse_sse(body)
-
-
-class _FakeResponsesClient:
-    def __init__(self, events: list[SimpleNamespace]) -> None:
-        self._events = events
-
-    @property
-    def responses(self):
-        return self
-
-    def create(self, **_kwargs):
-        return iter(self._events)
-
-
-def _live_stream_events(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, events: list[SimpleNamespace]
-) -> list[dict]:
-    previous = app.state.openai_client
-    app.state.openai_client = _FakeResponsesClient(events)
-    monkeypatch.setattr(
-        ui_app_module,
-        "get_settings",
-        lambda: SimpleNamespace(mock_mode=False, chat_deployment="test-model"),
-    )
-    try:
-        return _collect_stream(client, {"message": "my laptop is running slow"})
-    finally:
-        app.state.openai_client = previous
-
-
-def test_live_chat_stream_emits_citations_frame(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A terminal citations function_call is surfaced as its own SSE frame."""
-    payload = {
-        "citations": [
-            {
-                "index": 1,
-                "sourceId": "laptop-performance",
-                "sourceTitle": "Laptop Running Slow",
-                "sourceName": "laptop-performance.md",
-                "markers": [
-                    "\u30105:0\u2020source\u3011",
-                    "\u30105:1\u2020source\u3011",
-                ],
-            }
-        ]
-    }
-    events = _live_stream_events(
-        client,
-        monkeypatch,
-        [
-            SimpleNamespace(type="response.created"),
-            SimpleNamespace(type="response.output_text.delta", delta="Try a reboot "),
-            SimpleNamespace(
-                type="response.function_call_arguments.done",
-                name="citations",
-                arguments=json.dumps(payload),
-                item_id="citations-call",
-            ),
-            SimpleNamespace(type="response.completed"),
-        ],
-    )
-
-    citation_frames = [e for e in events if e["type"] == "citations"]
-    assert citation_frames == [{"type": "citations", "citations": payload["citations"]}]
-    assert not any(
-        e.get("label") == "Calling citations Agent"
-        for e in events
-        if e["type"] == "status"
-    )
-
-
-def test_live_chat_stream_omits_citations_when_absent(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Incident/direct turns without the terminal function_call stay unchanged."""
-    events = _live_stream_events(
-        client,
-        monkeypatch,
-        [
-            SimpleNamespace(type="response.created"),
-            SimpleNamespace(type="response.output_text.delta", delta="INC0010045 is open."),
-            SimpleNamespace(type="response.completed"),
-        ],
-    )
-
-    assert [e["type"] for e in events] == ["status", "token", "done"]
-    assert not [e for e in events if e["type"] == "citations"]
-
-
-def test_chat_stream_emits_handoff_status_frames(client: TestClient) -> None:
-    """The mock stream synthesises the live handoff status frames.
-
-    Mirrors the live Responses stream contract
-    (.squad/decisions/inbox/trinity-handoff-events-contract.md): a
-    "Calling Orchestrator" status frame first, then a mapped sub-agent label.
-    A KB-answerable 'create' prompt routes via triage.
-    """
-    events = _collect_stream(
-        client,
-        {"message": "Unable to log into Epic. Create a new incident."},
-    )
-    statuses = [e for e in events if e["type"] == "status"]
-
-    # First status frame is always "Calling Orchestrator".
-    assert statuses, "expected at least one status frame"
-    assert statuses[0] == {"type": "status", "label": "Calling Orchestrator"}
-
-    labels = [s["label"] for s in statuses]
-    assert "Calling Triage Agent" in labels
-    triage = next(s for s in statuses if s["label"] == "Calling Triage Agent")
-    assert triage["tool"] == "troubleshoot_from_knowledge_base"
-
-    # Status frames precede the first token frame (chip clears when text arrives).
-    first_status_idx = next(i for i, e in enumerate(events) if e["type"] == "status")
-    first_token_idx = next(i for i, e in enumerate(events) if e["type"] == "token")
-    assert first_status_idx < first_token_idx
-
-
-def test_chat_stream_emits_incident_handoff_status(client: TestClient) -> None:
-    """A confirm-ticket turn surfaces the 'Calling Incident Agent' status frame."""
-    original = "my laptop is running slow. please file a ticket."
-    offer = client.post("/api/chat", json={"message": original}).json()["reply"]
-
-    events = _collect_stream(
-        client,
-        {
-            "message": "go ahead",
-            "history": [
-                {"role": "user", "content": original},
-                {"role": "assistant", "content": offer},
-            ],
-        },
-    )
-    statuses = [e for e in events if e["type"] == "status"]
-    labels = [s["label"] for s in statuses]
-
-    assert statuses[0]["label"] == "Calling Orchestrator"
-    assert "Calling Incident Agent" in labels
-    incident = next(s for s in statuses if s["label"] == "Calling Incident Agent")
-    assert incident["tool"] == "manage_servicenow_incident"
+# --- AG-UI endpoint contract (mock mode) ------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_agui_endpoint_interrupt_then_approve_executes_mock_update() -> None:
+    """Prompt 3 — an update turn proposes a ServiceNow write, interrupts for
+    approval, then executes on resume-with-approval."""
     payload = {
         "threadId": "agui-approve-thread",
         "runId": "agui-approve-initial",
@@ -463,6 +145,7 @@ async def test_agui_endpoint_interrupt_then_approve_executes_mock_update() -> No
 
 @pytest.mark.asyncio
 async def test_agui_endpoint_reject_does_not_execute_mock_update() -> None:
+    """Rejecting the approval cancels the write — no ServiceNow call is made."""
     payload = {
         "threadId": "agui-reject-thread",
         "runId": "agui-reject-initial",
@@ -497,6 +180,8 @@ async def test_agui_endpoint_reject_does_not_execute_mock_update() -> None:
 
 @pytest.mark.asyncio
 async def test_agui_mock_kb_turn_emits_terminal_citations_tool() -> None:
+    """Capability 1 — a KB-answerable turn resolves via triage and surfaces a
+    terminal ``citations`` tool call (no approval card)."""
     events = await _post_agui(
         {
             "threadId": "agui-mock-citations-thread",
@@ -540,6 +225,8 @@ async def test_agui_mock_kb_turn_emits_terminal_citations_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_agui_mock_status_turn_has_no_approval_or_citations() -> None:
+    """Capability 3 — a read-only status lookup routes to the incident agent
+    with no approval interrupt and no citations."""
     events = await _post_agui(
         {
             "threadId": "agui-mock-status-thread",
@@ -559,11 +246,13 @@ async def test_agui_mock_status_turn_has_no_approval_or_citations() -> None:
     assert "citations" not in tool_names
     assert "servicenow_write_approval" not in tool_names
     assert "function_approval_request" not in [e.get("name") for e in events if e["type"] == "CUSTOM"]
-    assert "【" not in _text_deltas(events)
+    assert "\u3010" not in _text_deltas(events)
     assert "outcome" not in events[-1]
 
 
 def test_agui_live_proxy_emits_citations_tool_side_channel() -> None:
+    """The live proxy maps a hosted-orchestrator handoff + terminal citations
+    function_call into AG-UI tool pairs (route -> triage -> citations)."""
     citations = [
         {
             "index": 1,

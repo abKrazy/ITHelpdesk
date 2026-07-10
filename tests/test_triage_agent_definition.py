@@ -38,13 +38,19 @@ def _install_fake_projects_models(monkeypatch: pytest.MonkeyPatch) -> None:
             self.project_connection_id = project_connection_id
 
     class PromptAgentDefinition:
-        def __init__(self, *, model, instructions, tools):
+        def __init__(self, *, model, instructions, tools, reasoning=None):
             self.model = model
             self.instructions = instructions
             self.tools = tools
+            self.reasoning = reasoning
+
+    class Reasoning:
+        def __init__(self, *, effort):
+            self.effort = effort
 
     models.MCPTool = MCPTool
     models.PromptAgentDefinition = PromptAgentDefinition
+    models.Reasoning = Reasoning
 
 
 def test_kb_mcp_url_shape() -> None:

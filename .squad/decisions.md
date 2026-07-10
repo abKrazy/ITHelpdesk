@@ -2,6 +2,41 @@
 
 ## Active Decisions
 
+### 2026-07-10: De-bloat codebase + refresh AG-UI docs
+**By:** Squad (Coordinator)
+**What:** Removed the dead pre-AG-UI HTTP chat surface and refreshed docs to the
+current AG-UI architecture. Deleted `GET /`, `POST /api/chat`, `POST /api/chat/stream`
+(and all their helpers) from `src/helpdesk/ui/app.py` — the live frontend
+(`frontend/`, CopilotKit) only ever calls `/agui`. `app.py` is now AG-UI-only
+(`/agui` + `/healthz`, ~88 lines, down from ~383). Deleted the orphaned
+server-rendered `templates/index.html`, the unreferenced dev-scratch scripts
+`scripts/agui_hitl_check.py` and `scripts/agui_live_check.py` (they hardcoded a
+private deployment host), and stray `.pyc` artifacts. Dropped the now-unused
+`jinja2` dependency from `pyproject.toml`, `src/requirements.txt`, and
+`src/helpdesk/ui/requirements.txt`, plus the `[tool.setuptools.package-data]`
+section. Rewrote `tests/test_ui_app.py` to the AG-UI contract only (healthz +
+approve/reject/citations/status). Fixed stale docstrings/READMEs
+(`src/helpdesk/__init__.py`, `src/helpdesk/ui/README.md`, `tests/README.md`).
+Updated the README + ARCHITECTURE mermaid diagrams to show the AG-UI SSE protocol
+and the HITL human-approval interrupt node, and corrected stale `src/agents` /
+`src/orchestrator` path refs to `src/helpdesk/*`.
+**Why:** User: "Do any necessary code cleanups so the codebase is pristine and has
+no unnecessary bloat. After that, make sure the docs are all updated (including
+Architecture diagram) to reflect the latest implementation leveraging ag-ui."
+**Coverage preserved:** The deleted `/api/chat` tests exercised mock-orchestrator
+routing for the sample prompts; that behavior is still covered by
+`test_orchestrator_flows.py` (Orchestrator directly) + the kept `/agui` mock tests.
+No runtime behavior change — the deployed backend already served only `/agui` +
+`/healthz`.
+**Also fixed (pre-existing, unrelated):** `test_triage_agent_definition.py` and
+`test_incident_agent_definition.py` had been red since commit `0fae425` (latency
+work) added `Reasoning` to the agent definitions but never updated their fake
+`azure.ai.projects.models` stub. Added a `Reasoning` stub + `reasoning` kwarg on
+the fake `PromptAgentDefinition` in both files.
+**Verified:** full offline pytest suite green (123 passed); ruff clean on changed
+files; frontend `npm run lint` + `npm run build` (with standalone-asset postbuild)
+both green.
+
 ### 2026-07-10: Ticket status reports assignee + last activity
 **By:** Squad (Coordinator)
 **What:** Extended the incident agent's status/read path. The single `queryTable`

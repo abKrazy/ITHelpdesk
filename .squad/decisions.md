@@ -2,6 +2,23 @@
 
 ## Active Decisions
 
+# Decision — UI re-platform to AG-UI + CopilotKit with option-C HITL (BUILT, mock-validated, PRE-LIVE-CUTOVER)
+
+**Authors:** Morpheus (design), Trinity (spike + backend/orchestrator), Tank (infra), Switch (frontend), Dozer (QA/docs)
+**Date:** 2026-07-10
+**Status:** Code-complete + mock-validated on master. **NOT yet cut over live** — the live env still runs the legacy vanilla-JS UI (orchestrator hosted v12).
+**Commits:** `71e1840` (infra) · `811415a` (backend) · `f27b48d` (frontend) · `5de4caa` (QA/docs). Design/spike detail in git history + prior inbox docs.
+
+**What shipped (all against the MOCK path; no live deploy):**
+- **Architecture invariant preserved:** Foundry **Incident agent** (APIM ServiceNow MCP) and **Triage agent** (Foundry IQ) are byte-for-byte UNCHANGED; **Orchestrator stays a Foundry Hosted Agent** and remains the sole router + write-gating authority. All real change is confined to the UI layer + Orchestrator. UI/AG-UI = protocol/presentation mechanics only, no decision authority.
+- **HITL = option C (propose → approve → execute).** On a create/update intent the Orchestrator returns a structured `servicenow_write_proposal` WITHOUT executing; the AG-UI proxy converts it to a `servicenow_write_approval` interrupt (`RUN_FINISHED.outcome.interrupts[]`, proposal carried as stable `proposal_json`); on approve the proxy re-invokes the **Orchestrator** to execute (→ Incident agent → APIM MCP); on reject it cancels. Status/read-only turns are NOT gated. **Option B (Foundry MCP approval via `agent_reference`) was rejected** — no clean propagation to AG-UI resume; would collapse back to C anyway.
+- **Backend** (`src/helpdesk/ui/agui_proxy.py`, `app.py`, `orchestrator/orchestrator.py`, `src/orchestrator/main.py`): `/agui` FastAPI endpoint via `agent-framework-ag-ui==1.0.0rc8` (pins: `agent-framework==1.11.0`, `ag-ui-protocol==0.1.19`). Custom `HelpdeskAGUIProxyAgent(BaseAgent)`; synthetic handoff tool-calls (`route_orchestrator`/`troubleshoot_from_knowledge_base`/`manage_servicenow_incident`) for chips; terminal `citations` side-channel preserved. Pending approvals in-memory (MVP single-instance; use `snapshot_store` before scale-out).
+- **Frontend** (`./frontend`): Next.js 16 + React 19 + CopilotKit 1.55.2-next.1, Node 22, `output:"standalone"`. `app/api/copilotkit/route.ts` registers the Python `/agui` as an `HttpAgent` (creds stay server-side via `AGUI_BACKEND_URL`). Parity: streaming, "Thinking…", handoff chips, `[n]` citations + non-clickable Sources, and the HITL approval card driving same-thread `resume[{interruptId,status,payload:{approved,proposal_json}}]`. **Note:** CopilotKit's built-in HITL hook can't yet render rc8 `outcome.interrupts[]`, so a thin custom interrupt handler is used; `@ag-ui/*` pinned to `0.0.57` via npm overrides to preserve the `resume[]` contract.
+- **Infra** (`azure.yaml`, `infra/main.bicep`, `infra/modules/appservice.bicep`): split into two App Services on the shared **Basic B2** plan — Python `api` (existing resource kept in place, re-tagged `ui`→`api`) + new Node `ui` (`NODE|22-lts`, Oryx). `AGUI_BACKEND_URL` wired from api hostname → `/agui`; outputs `SERVICE_API_URI`/`SERVICE_UI_URI`.
+- **QA/docs:** ruff clean; **138 backend tests** pass; frontend install/build/lint/standalone pass; full mock parity checklist PASS (incl. citations E2E closed by enriching the mock to emit the real `citations` tool call). `README.md` + `ARCHITECTURE.md` updated (two-service topology, Node 22 prereq, HITL approval UX, cutover order, preview-pin callout).
+
+**⚠️ Live-cutover risk (Tank):** `azure.yaml` now references `./frontend` and re-tags the live Python app `ui`→`api`, so a full `azd up` is intentionally not green until cutover. Safe order in the LIVE env: `azd provision` (re-tags Python app in place, creates Node app) → `azd deploy api` → `azd deploy ui` → verify `SERVICE_API_URI`/`SERVICE_UI_URI` → switch users to the Node UI URL. Fresh envs `azd up` cleanly. **Cutover NOT yet run — awaiting user go/no-go; keep legacy UI as rollback.**
+
 # Decision — Re-index Outlook KB assignment group ("M365 Support") to LIVE
 
 **Author:** Tank (Infra / Platform Engineer)

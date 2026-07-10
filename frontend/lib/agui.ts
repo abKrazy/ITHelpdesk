@@ -74,10 +74,10 @@ export function renderCitedText(rawText: string, citations: Citation[] = []): st
       const idx = Number(entry.index);
       const title = entry.sourceTitle || entry.sourceName || entry.sourceId || entry.markers?.[0] || "Source";
       const suffix = entry.sourceName && entry.sourceName !== title ? ` — ${entry.sourceName}` : "";
-      return `[${idx}] ${title}${suffix}`;
+      return `- **[${idx}]** ${title}${suffix}`;
     });
 
-  return `${rendered.trimEnd()}\n\nSources:\n${lines.join("\n")}`;
+  return `${rendered.trimEnd()}\n\n---\n\n**Sources**\n\n${lines.join("\n")}`;
 }
 
 export function toAguiMessages(messages: ChatMessage[]): Message[] {

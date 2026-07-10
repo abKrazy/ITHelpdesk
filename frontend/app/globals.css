@@ -56,6 +56,100 @@ textarea {
   line-height: 1.4;
 }
 
+/* Structured (Markdown) rendering for assistant answers */
+.message-text.markdown {
+  white-space: normal;
+  line-height: 1.5;
+}
+.message-text.markdown > *:first-child {
+  margin-top: 0;
+}
+.message-text.markdown > *:last-child {
+  margin-bottom: 0;
+}
+.message-text.markdown p {
+  margin: 0 0 10px;
+}
+.message-text.markdown h1,
+.message-text.markdown h2,
+.message-text.markdown h3,
+.message-text.markdown h4 {
+  margin: 14px 0 6px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.message-text.markdown h1 { font-size: 1.25em; }
+.message-text.markdown h2 { font-size: 1.15em; }
+.message-text.markdown h3 { font-size: 1.05em; }
+.message-text.markdown h4 { font-size: 1em; }
+.message-text.markdown ul,
+.message-text.markdown ol {
+  margin: 6px 0 10px;
+  padding-left: 22px;
+}
+.message-text.markdown li {
+  margin: 3px 0;
+}
+.message-text.markdown li > p {
+  margin: 0;
+}
+.message-text.markdown strong {
+  font-weight: 700;
+}
+.message-text.markdown a {
+  color: var(--blue);
+  text-decoration: underline;
+  word-break: break-word;
+}
+.message-text.markdown code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: rgb(15 23 42 / 0.06);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.message-text.markdown pre {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.message-text.markdown pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: 0.85em;
+}
+.message-text.markdown blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--blue);
+  color: var(--muted);
+}
+.message-text.markdown hr {
+  border: none;
+  border-top: 1px solid rgb(15 23 42 / 0.12);
+  margin: 14px 0;
+}
+.message-text.markdown table {
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  width: 100%;
+  font-size: 0.95em;
+}
+.message-text.markdown th,
+.message-text.markdown td {
+  border: 1px solid rgb(15 23 42 / 0.15);
+  padding: 6px 10px;
+  text-align: left;
+}
+.message-text.markdown th {
+  background: rgb(15 23 42 / 0.05);
+  font-weight: 700;
+}
+
 .message.user {
   background: var(--blue);
   color: #fff;

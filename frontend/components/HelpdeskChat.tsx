@@ -2,6 +2,8 @@
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { Interrupt, ResumeEntry } from "@ag-ui/core";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ChatMessage,
   HANDOFF_LABELS,
@@ -283,7 +285,22 @@ function MessageBubble({
           })}
         </ul>
       ) : null}
-      <div className="message-text">{message.content}</div>
+      {message.role === "assistant" && !message.loading ? (
+        <div className="message-text markdown">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ node, ...props }) => (
+                <a {...props} target="_blank" rel="noreferrer noopener" />
+              ),
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
+        </div>
+      ) : (
+        <div className="message-text">{message.content}</div>
+      )}
       {message.pendingApproval ? <ApprovalCard approval={message.pendingApproval} onApproval={onApproval} /> : null}
       {message.approvalStatus ? <div className="approval-status">{message.approvalStatus === "approved" ? "Approved" : "Rejected"}</div> : null}
     </article>

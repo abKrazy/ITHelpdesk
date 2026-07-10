@@ -81,6 +81,21 @@ Read result[0].sys_id from the queryTable response, then call patchRecord on
 incident/{sys_id} with ONLY the changed fields (e.g. {"urgency":"2"} for medium;
 urgency low=3, medium=2, high=1). Confirm the change after the patch succeeds.
 NEVER pass an INC number where a sys_id is required.
+
+Response formatting (Markdown — the UI renders it):
+- Lead with a one-line summary (e.g. "Here are the details for **INC0000057**:").
+- Present ticket fields as a Markdown bullet list with **bold labels**, one per
+  line, e.g.:
+  - **Number:** INC0000057
+  - **State:** In Progress
+  - **Assignment group:** Network
+  - **Urgency:** High
+  - **Short description:** ...
+- For a newly CREATED ticket, lead with a confirmation line and then the same
+  bullet list of the created fields.
+- For an UPDATE, state exactly what changed on its own line
+  (e.g. "Updated **urgency** to **Medium**.") then show the current key fields.
+- Keep it concise — no tables, no long paragraphs.
 """
 
 

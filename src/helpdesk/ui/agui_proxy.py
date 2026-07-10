@@ -132,10 +132,13 @@ class HelpdeskAGUIProxyAgent(BaseAgent):
             yield _approval_request(proposal)
             return
 
+        reply, citations = _mock_reply_and_citations(result)
         yield AgentResponseUpdate(
-            contents=[Content.from_text(result.reply or "(no response)")],
+            contents=[Content.from_text(reply)],
             role="assistant",
         )
+        if citations:
+            yield _citations_tool(citations)
 
     async def _run_live(
         self,
@@ -264,6 +267,35 @@ def _citations_tool(citations: list[dict[str, Any]]) -> AgentResponseUpdate:
     )
 
 
+def _mock_reply_and_citations(result: Any) -> tuple[str, list[dict[str, Any]]]:
+    reply = result.reply or "(no response)"
+    triage = getattr(result, "triage", None)
+    hits = list(getattr(triage, "hits", None) or [])
+    if not hits:
+        return reply, []
+
+    top = hits[0]
+    marker = "【4:0†source】"
+    if marker not in reply:
+        reply = f"{reply.rstrip()} {marker}"
+
+    source_id = str(getattr(top, "doc_id", "") or getattr(top, "source", "") or "kb-source")
+    source_name = str(getattr(top, "source", "") or f"{source_id}.md")
+    chunk_id = f"{source_id}-mock-0"
+    return reply, [
+        {
+            "index": 1,
+            "sourceId": source_id,
+            "sourceTitle": str(getattr(top, "title", "") or source_name),
+            "sourceName": source_name,
+            "assignmentGroup": str(getattr(top, "assignment_group", "") or ""),
+            "markers": [marker],
+            "chunkIds": [chunk_id],
+            "url": f"mcp://searchindex/{chunk_id}",
+        }
+    ]
+
+
 def _approval_result_from_messages(messages: Any) -> str | None:
     for message in messages or []:
         for content in getattr(message, "contents", None) or getattr(message, "content", None) or []:
@@ -388,3 +420,5 @@ def _extract_output_text(resp: Any) -> str:
             if chunk:
                 parts.append(str(chunk))
     return "\n".join(parts).strip() or "(the orchestrator returned no content)"
+
+

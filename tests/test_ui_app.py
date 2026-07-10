@@ -161,6 +161,21 @@ def _text_deltas(events: list[dict]) -> str:
     return "".join(e.get("delta", "") for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
 
 
+def _tool_args(events: list[dict], tool_name: str) -> dict:
+    call_ids = [
+        e["toolCallId"]
+        for e in events
+        if e["type"] == "TOOL_CALL_START" and e.get("toolCallName") == tool_name
+    ]
+    assert call_ids, f"expected {tool_name} tool call"
+    raw_args = "".join(
+        e.get("delta", "")
+        for e in events
+        if e["type"] == "TOOL_CALL_ARGS" and e.get("toolCallId") == call_ids[-1]
+    )
+    return json.loads(raw_args)
+
+
 def _interrupt(events: list[dict]) -> dict:
     finished = [e for e in events if e["type"] == "RUN_FINISHED"]
     assert finished
@@ -478,6 +493,74 @@ async def test_agui_endpoint_reject_does_not_execute_mock_update() -> None:
 
     assert not [e for e in rejected_events if e["type"] == "TOOL_CALL_RESULT"]
     assert "ServiceNow change cancelled" in _text_deltas(rejected_events)
+
+
+@pytest.mark.asyncio
+async def test_agui_mock_kb_turn_emits_terminal_citations_tool() -> None:
+    events = await _post_agui(
+        {
+            "threadId": "agui-mock-citations-thread",
+            "runId": "agui-mock-citations-run",
+            "messages": [
+                {
+                    "id": "user-1",
+                    "role": "user",
+                    "content": "How do I reset my forgotten password?",
+                }
+            ],
+        }
+    )
+
+    marker = "\u30104:0\u2020source\u3011"
+    text = _text_deltas(events)
+    assert marker in text
+
+    payload = _tool_args(events, "citations")
+    assert payload["citations"] == [
+        {
+            "index": 1,
+            "sourceId": "password-reset",
+            "sourceTitle": "Password Reset and Login Assistance",
+            "sourceName": "password-reset.md",
+            "assignmentGroup": "Service Desk",
+            "markers": [marker],
+            "chunkIds": ["password-reset-mock-0"],
+            "url": "mcp://searchindex/password-reset-mock-0",
+        }
+    ]
+    citation_start = next(
+        i
+        for i, event in enumerate(events)
+        if event["type"] == "TOOL_CALL_START" and event.get("toolCallName") == "citations"
+    )
+    last_text = max(i for i, event in enumerate(events) if event["type"] == "TEXT_MESSAGE_CONTENT")
+    assert citation_start > last_text
+    assert "outcome" not in events[-1]
+
+
+@pytest.mark.asyncio
+async def test_agui_mock_status_turn_has_no_approval_or_citations() -> None:
+    events = await _post_agui(
+        {
+            "threadId": "agui-mock-status-thread",
+            "runId": "agui-mock-status-run",
+            "messages": [
+                {
+                    "id": "user-1",
+                    "role": "user",
+                    "content": "lookup details for incident INC0000057",
+                }
+            ],
+        }
+    )
+
+    tool_names = [e.get("toolCallName") for e in events if e["type"] == "TOOL_CALL_START"]
+    assert "manage_servicenow_incident" in tool_names
+    assert "citations" not in tool_names
+    assert "servicenow_write_approval" not in tool_names
+    assert "function_approval_request" not in [e.get("name") for e in events if e["type"] == "CUSTOM"]
+    assert "【" not in _text_deltas(events)
+    assert "outcome" not in events[-1]
 
 
 def test_agui_live_proxy_emits_citations_tool_side_channel() -> None:

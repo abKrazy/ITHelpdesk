@@ -31,6 +31,11 @@ env/
 .coverage
 htmlcov/
 
+# --- Node / Next.js frontend ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
 # --- Local env / secrets (never commit) ---
 .env
 *.local.env

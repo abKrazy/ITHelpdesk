@@ -2,6 +2,28 @@
 
 ## Active Decisions
 
+### 2026-07-10: Ticket status reports assignee + last activity
+**By:** Squad (Coordinator)
+**What:** Extended the incident agent's status/read path. The single `queryTable`
+call now requests `assigned_to`, `sys_updated_on`, `sys_updated_by`, `work_notes`,
+`comments` (plus the existing fields) AND passes `sysparm_display_value=true` so
+reference fields resolve to human names (assigned_to → "Don Goodliffe", not a
+sys_id) and journal fields return their text. Status responses now surface WHO
+owns the ticket (assigned person + group, "Unassigned" when empty) and the LAST
+ACTION (last-updated timestamp + user, plus the most recent journal entry, with a
+fallback to the update time when no notes exist).
+**Why:** User: status "does not return a last update/action ... that is what a
+user really wants to know — who is assigned and what was the last action."
+**How enabled:** The ServiceNow OpenAPI (assets/ServiceNow-OpenAPI-spec.json)
+Table API GET exposes `sysparm_display_value`; without it, reference fields are
+sys_ids and journal fields read empty. Still ONE MCP call — no latency regression.
+**Verified live:** INC0000015 → "Assigned to: Don Goodliffe", In Progress, last
+activity = latest comment w/ timestamp+author. INC0000039 → group Network + last
+comment. INC0000057 → Unassigned + graceful last-update fallback. Incident agent
+re-published v10 (invoked live by the orchestrator via agent_reference — no
+redeploy needed).
+
+
 ### 2026-07-10: Agent answers render as structured Markdown in the UI
 **By:** Squad (Coordinator)
 **What:** Assistant messages were shown as flat plain text. Added `react-markdown`

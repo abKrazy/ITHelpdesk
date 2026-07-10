@@ -12,7 +12,13 @@
 
 # --- Web server + UI (pyproject [ui] + appservice.bicep start command) ---
 agent-framework-ag-ui==1.0.0rc8
-agent-framework==1.11.0
+# Use agent-framework-core (provides the `agent_framework` namespace) instead of the
+# `agent-framework` meta-package: the meta pins core[all], which drags in
+# agent-framework-hyperlight -> hyperlight-sandbox-backend-wasm and makes the App
+# Service Oryx build unresolvable (ResolutionImpossible). The AG-UI proxy only needs
+# core primitives (BaseAgent, Content, tool), and agent-framework-ag-ui itself depends
+# on agent-framework-core (not the meta), so core alone is sufficient here.
+agent-framework-core==1.11.0
 ag-ui-protocol==0.1.19
 fastapi>=0.111
 uvicorn[standard]>=0.30

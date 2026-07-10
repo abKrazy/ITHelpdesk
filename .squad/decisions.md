@@ -2,6 +2,14 @@
 
 ## Active Decisions
 
+### 2026-07-10: Next standalone static assets were 404 in prod (real cause of "no UI change")
+**By:** Squad (Coordinator), for @abKrazy
+**What:** The UI's next.config uses `output: "standalone"` and server.mjs runs `.next/standalone/server.js`. Next's standalone output does NOT include `.next/static` or `public/`; they must be copied into the standalone tree. Oryx/App Service never did this, so EVERY `/_next/static/*` request (all JS + CSS) returned 404. The app served un-styled, un-hydrated HTML — so the composer/textarea fix (and all styling) never appeared, even though the server-rendered HTML was correct.
+**Fix:** Added `frontend/scripts/copy-standalone-assets.mjs` wired as an npm `postbuild` step that copies `.next/static` (and `public` if present) into `.next/standalone/.next/static`. Verified locally (asset 200 + textarea) and live (8/8 assets 200, CSS contains composer styling). Deployed on B3 then scaled back to B2.
+**Why:** postbuild runs automatically after `next build` under Oryx, is cross-platform (Node fs.cpSync), and keeps the intended standalone architecture. Alternative (drop standalone / always `next start`) rejected to minimize behavioral change since full node_modules already ships.
+
+---
+
 ### 2026-07-10: UI composer fix + B1→B2 plan correction + B3-build workaround
 
 **By:** Squad (Coordinator), for @abKrazy

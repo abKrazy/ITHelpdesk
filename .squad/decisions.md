@@ -2,6 +2,33 @@
 
 ## Active Decisions
 
+### 2026-07-10: Latency round 2 — trace-driven sub-agent tuning
+**By:** Squad (Coordinator)
+**What:** Cut per-turn latency using App Insights trace data rather than guesses.
+Three changes: (1) routing pass decoupled onto gpt-5.4-mini via new
+`ROUTING_MODEL_DEPLOYMENT_NAME` (defaults to the triage mini deployment) — routing
+is a lightweight intent decision; (2) incident + triage PromptAgent `reasoning`
+pinned to `low` (env-overridable via `INCIDENT_REASONING_EFFORT` /
+`TRIAGE_REASONING_EFFORT`); (3) **incident status lookups collapsed from 2 serial
+ServiceNow MCP calls to 1** — the mandated `queryTable`→`getRecord` pattern was
+redundant for reads because the `queryTable` projection already returns
+number/state/assignment_group/urgency/short_description/description. `getRecord`
+(sys_id) is now only used for updates (`patchRecord`).
+**Why:** Traces showed the routing pass was already ~1s (not the bottleneck). The
+real cost was the incident sub-agent (~5.2s) doing two serial MCP round-trips
+(queryTable ~1.9s + getRecord ~1.7s) each preceded by a model pass. The
+`forward-request` spans were 0ms with zero errors — NOT a latency source (resolves
+the user's earlier hypothesis). Measured result: incident `invoke_agent` ~5.2s →
+~3.4s; status query total ~14s → ~11.8s. Remaining floor is Foundry
+`agent_reference` transport (hosted orchestrator → sub-agent → MCP → ServiceNow),
+inherent to the required multi-agent architecture and not code-tunable without
+collapsing the design the user wants preserved.
+**Repro:** All defaults baked into code (`build_incident_definition`,
+`build_triage_definition`, `setup.create_hosted_orchestrator`, `postprovision.py`)
+so `azd up` reproduces the tuning. Orchestrator image rebuilt + hosted agent
+re-registered (v14); incident PromptAgent re-published (v8), triage (v7).
+
+
 ### 2026-07-10: Next standalone static assets were 404 in prod (real cause of "no UI change")
 **By:** Squad (Coordinator), for @abKrazy
 **What:** The UI's next.config uses `output: "standalone"` and server.mjs runs `.next/standalone/server.js`. Next's standalone output does NOT include `.next/static` or `public/`; they must be copied into the standalone tree. Oryx/App Service never did this, so EVERY `/_next/static/*` request (all JS + CSS) returned 404. The app served un-styled, un-hydrated HTML — so the composer/textarea fix (and all styling) never appeared, even though the server-rendered HTML was correct.

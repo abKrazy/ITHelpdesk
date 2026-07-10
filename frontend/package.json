@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/copy-standalone-assets.mjs",
     "start": "node server.mjs",
     "lint": "eslint . --max-warnings=0",
     "mock:agui": "node scripts/mock-agui-server.mjs"

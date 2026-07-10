@@ -39,6 +39,7 @@ export type ChatMessage = {
   approvalStatus?: "approved" | "rejected";
   loading?: boolean;
   error?: boolean;
+  steps?: string[];
 };
 
 export const HANDOFF_LABELS: Record<string, string> = {

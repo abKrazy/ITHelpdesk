@@ -27,7 +27,6 @@ export function HelpdeskChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
   const [input, setInput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
-  const [activeChip, setActiveChip] = useState<string | null>(null);
   const messagesRef = useRef(messages);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -59,6 +58,7 @@ export function HelpdeskChat() {
       setIsRunning(true);
       const toolArgs = new Map<string, string>();
       const toolNames = new Map<string, string>();
+      const steps: string[] = messagesRef.current.find((message) => message.id === assistantId)?.steps || [];
       let rawText = "";
       let citations = messagesRef.current.find((message) => message.id === assistantId)?.citations || [];
       let firstToken = false;
@@ -83,7 +83,6 @@ export function HelpdeskChat() {
             const delta = typeof event.delta === "string" ? event.delta : "";
             if (!firstToken) {
               firstToken = true;
-              setActiveChip(null);
               updateMessage(assistantId, { loading: false, content: "", rawContent: "" });
             }
             rawText += delta;
@@ -100,7 +99,10 @@ export function HelpdeskChat() {
             const toolCallName = typeof event.toolCallName === "string" ? event.toolCallName : "";
             if (toolCallId) toolNames.set(toolCallId, toolCallName);
             const label = HANDOFF_LABELS[toolCallName];
-            if (label) setActiveChip(label);
+            if (label && steps[steps.length - 1] !== label) {
+              steps.push(label);
+              updateMessage(assistantId, { steps: [...steps] });
+            }
           }
 
           if (type === "TOOL_CALL_ARGS") {
@@ -119,7 +121,6 @@ export function HelpdeskChat() {
                 rawContent: rawText,
               });
             }
-            if (toolNames.get(toolCallId) !== "citations") setActiveChip(null);
           }
 
           if (type === "RUN_FINISHED") {
@@ -152,7 +153,6 @@ export function HelpdeskChat() {
           content: `Error contacting the agent: ${error instanceof Error ? error.message : String(error)}`,
         });
       } finally {
-        setActiveChip(null);
         setIsRunning(false);
       }
     },
@@ -239,7 +239,6 @@ export function HelpdeskChat() {
             }}
           />
         ))}
-        {activeChip ? <div className="handoff-chip">{activeChip}</div> : null}
         <div ref={scrollRef} />
       </section>
       <form className="composer" onSubmit={submitMessage}>
@@ -271,6 +270,19 @@ function MessageBubble({
 }) {
   return (
     <article className={`message ${message.role} ${message.loading ? "thinking" : ""} ${message.error ? "error" : ""}`}>
+      {message.steps && message.steps.length > 0 ? (
+        <ul className="handoff-steps">
+          {message.steps.map((step, index) => {
+            const isLast = index === message.steps!.length - 1;
+            const active = message.loading && isLast;
+            return (
+              <li key={`${step}-${index}`} className={active ? "active" : "done"}>
+                {step}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
       <div className="message-text">{message.content}</div>
       {message.pendingApproval ? <ApprovalCard approval={message.pendingApproval} onApproval={onApproval} /> : null}
       {message.approvalStatus ? <div className="approval-status">{message.approvalStatus === "approved" ? "Approved" : "Rejected"}</div> : null}

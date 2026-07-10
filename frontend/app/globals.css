@@ -97,27 +97,55 @@ textarea {
   100% { clip-path: inset(0 0 0 0); }
 }
 
-.handoff-chip {
+.handoff-steps {
+  list-style: none;
+  margin: 0 0 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.handoff-steps li {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  width: fit-content;
   background: #eef2ff;
   color: #3730a3;
   border: 1px solid #c7d2fe;
   border-radius: 999px;
-  padding: 4px 12px;
+  padding: 3px 12px;
   font-size: 12px;
   font-weight: 600;
-  margin: 4px 20% 8px 0;
 }
 
-.handoff-chip::before {
+.handoff-steps li::before {
   content: "";
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #6366f1;
+}
+
+.handoff-steps li.active::before {
   animation: handoff-pulse 1s ease-in-out infinite;
+}
+
+.handoff-steps li.done {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.handoff-steps li.done::before {
+  content: "✓";
+  background: transparent;
+  color: #16a34a;
+  width: auto;
+  height: auto;
+  font-size: 11px;
+  line-height: 1;
 }
 
 @keyframes handoff-pulse {

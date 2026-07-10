@@ -1,0 +1,268 @@
+:root {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --header: #0f172a;
+  --text: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --blue: #2563eb;
+  --blue-dark: #1d4ed8;
+  --danger: #dc2626;
+  --danger-dark: #b91c1c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, Segoe UI, Arial, sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.app-header {
+  background: var(--header);
+  color: #fff;
+  font-weight: 600;
+  padding: 14px 20px;
+}
+
+.chat-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-panel {
+  width: min(100%, 792px);
+  margin: 20px auto 0;
+  padding: 0 16px 110px;
+  flex: 1;
+}
+
+.message {
+  padding: 10px 14px;
+  border-radius: 12px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.message.user {
+  background: var(--blue);
+  color: #fff;
+  margin-left: 20%;
+}
+
+.message.assistant {
+  background: #fff;
+  border: 1px solid var(--line);
+  margin-right: 20%;
+}
+
+.message.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.message.thinking .message-text {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.message.thinking .message-text::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  animation: think-dots 1.2s steps(4, end) infinite;
+  overflow: hidden;
+  vertical-align: bottom;
+}
+
+.message.thinking .message-text::after {
+  content: "…";
+}
+
+@keyframes think-dots {
+  0% { clip-path: inset(0 100% 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+
+.handoff-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 4px 20% 8px 0;
+}
+
+.handoff-chip::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: handoff-pulse 1s ease-in-out infinite;
+}
+
+@keyframes handoff-pulse {
+  0%, 100% { opacity: .35; }
+  50% { opacity: 1; }
+}
+
+.composer {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: min(100%, 792px);
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  background: linear-gradient(180deg, rgb(243 244 246 / 0), var(--bg) 18%);
+}
+
+.composer input {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 15px;
+  background: #fff;
+}
+
+.composer button,
+.approval-actions button {
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.composer button:hover,
+.approval-actions button:hover {
+  background: var(--blue-dark);
+}
+
+.composer button:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.approval-card {
+  margin-top: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  padding: 12px;
+  background: #eff6ff;
+  white-space: normal;
+}
+
+.approval-heading {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.proposal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.proposal-grid div {
+  min-width: 0;
+}
+
+.proposal-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.proposal-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-editor {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.proposal-editor textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid #93c5fd;
+  border-radius: 10px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.approval-actions .secondary {
+  background: #475569;
+}
+
+.approval-actions .danger {
+  background: var(--danger);
+}
+
+.approval-actions .danger:hover {
+  background: var(--danger-dark);
+}
+
+.approval-error,
+.approval-status {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.approval-error {
+  color: #991b1b;
+}
+
+.approval-status {
+  color: #166534;
+}
+
+@media (max-width: 640px) {
+  .message.user,
+  .message.assistant {
+    margin-left: 0;
+    margin-right: 0;
+  }
+}

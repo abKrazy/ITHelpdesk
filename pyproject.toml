@@ -27,7 +27,13 @@ orchestrator = [
 ]
 # Owner: Trinity — triage KB grounding + indexing
 agents = [
-  "azure-search-documents>=11.5.0",
+  # PIN (do not loosen): the Foundry IQ agentic-retrieval preview models this code
+  # imports (KnowledgeBase, SearchIndexKnowledgeSource, KnowledgeRetrievalOutputMode,
+  # KnowledgeRetrievalMinimalReasoningEffort, ...) exist ONLY in 11.7.0b2. Stable
+  # 12.0.0 and the newer 12.1.0b1 beta renamed/removed them, so a ">=" range silently
+  # resolves to an incompatible release and Foundry agent setup crashes with
+  # "cannot import name 'KnowledgeBase'". Keep this exact-pinned. See src/requirements.txt.
+  "azure-search-documents==11.7.0b2",
   "azure-ai-projects==2.3.0",
 ]
 # Owner: Switch — ServiceNow / APIM MCP client

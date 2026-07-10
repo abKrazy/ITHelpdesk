@@ -56,34 +56,68 @@ def upload_kb_docs() -> None:
     blob_endpoint = env("AZURE_STORAGE_BLOB_ENDPOINT")
     container = env("AZURE_STORAGE_KB_CONTAINER", required=False, default="kbdocs")
 
+    import time
+
+    from azure.core.exceptions import HttpResponseError
+
     from azure.storage.blob import BlobServiceClient
 
     from helpdesk.shared import get_credential
 
     service = BlobServiceClient(account_url=blob_endpoint, credential=get_credential())
-    try:
-        service.create_container(container)
-    except Exception:
-        pass  # already exists — idempotent
-    container_client = service.get_container_client(container)
-    try:
-        for doc in docs:
-            container_client.upload_blob(name=doc.name, data=doc.read_bytes(), overwrite=True)
-        print(f"[postprovision] uploaded {len(docs)} KB docs to {blob_endpoint}{container}")
-    except Exception as exc:  # noqa: BLE001 — archival copy is non-critical
-        # The archival blob copy is NOT on the RAG path: build_search_index()
-        # reads assets/kb locally and pushes chunks straight to AI Search, whose
-        # endpoint stays publicly reachable. Some governed subscriptions enforce
-        # an Azure Policy that forces storage publicNetworkAccess=Disabled, which
-        # blocks laptop-based blob uploads. Warn and continue so `azd up` still
-        # completes and the triage agent stays fully grounded.
-        print(
-            f"[postprovision] WARNING: KB blob upload skipped ({type(exc).__name__}: {exc}). "
-            "This is archival-only and does NOT affect AI Search grounding "
-            "(see build_search_index). Common cause: an Azure Policy disabling "
-            "storage public network access. Continuing.",
-            file=sys.stderr,
-        )
+
+    # The deployer's "Storage Blob Data Contributor" role assignment is created
+    # during `azd provision`, but Azure data-plane RBAC can take a few minutes to
+    # propagate. postprovision runs seconds later, so the first attempt often gets
+    # 403 AuthorizationFailure. Retry with backoff so the upload succeeds once the
+    # role propagates instead of failing the run on a transient permissions gap.
+    delays = [0, 15, 30, 45, 60]
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            print(
+                f"[postprovision] KB blob upload not yet authorized; waiting {delay}s "
+                f"for RBAC to propagate (attempt {attempt}/{len(delays)})...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        try:
+            try:
+                service.create_container(container)
+            except Exception:
+                pass  # already exists — idempotent
+            container_client = service.get_container_client(container)
+            for doc in docs:
+                container_client.upload_blob(
+                    name=doc.name, data=doc.read_bytes(), overwrite=True
+                )
+            print(f"[postprovision] uploaded {len(docs)} KB docs to {blob_endpoint}{container}")
+            return
+        except HttpResponseError as exc:
+            # 403 AuthorizationFailure is the propagation case — keep retrying.
+            last_exc = exc
+            status = getattr(exc, "status_code", None)
+            code = getattr(getattr(exc, "error", None), "code", "") or ""
+            if status == 403 or "AuthorizationFailure" in str(exc) or code == "AuthorizationFailure":
+                continue
+            break  # non-auth error (e.g. network) — stop retrying, warn below
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            break
+
+    # The archival blob copy is NOT on the RAG path: build_search_index() reads
+    # assets/kb locally and pushes chunks straight to AI Search, so triage grounding
+    # stays intact even when this upload is skipped. Warn and continue so `azd up`
+    # still completes.
+    print(
+        f"[postprovision] WARNING: KB blob upload skipped ({type(last_exc).__name__}: {last_exc}). "
+        "This is archival-only and does NOT affect AI Search grounding "
+        "(see build_search_index). Most common cause: the deployer's 'Storage Blob "
+        "Data Contributor' role assignment had not finished propagating (403 "
+        "AuthorizationFailure) — re-running 'azd provision' usually resolves it. Less "
+        "commonly, an Azure Policy disables storage public network access. Continuing.",
+        file=sys.stderr,
+    )
 
 
 def build_search_index() -> None:

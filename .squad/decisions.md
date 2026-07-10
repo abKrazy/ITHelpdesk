@@ -2,6 +2,27 @@
 
 ## Active Decisions
 
+### 2026-07-10T14:40:04-05:00: Pin azure-search-documents==11.7.0b2; retry KB blob upload for RBAC propagation
+
+**By:** Trinity (via Squad Coordinator, req. by abKrazy)
+**What:** Two deploy-blocker fixes reported by an external deployer.
+1. Foundry agent setup crashed with `cannot import name 'KnowledgeBase'`. The
+   Foundry IQ agentic-retrieval preview models (KnowledgeBase, SearchIndexKnowledgeSource,
+   KnowledgeRetrievalOutputMode, KnowledgeRetrievalMinimalReasoningEffort, ...) exist
+   ONLY in `azure-search-documents==11.7.0b2`. The loose `>=11.5.0` pin resolved to
+   stable `12.0.0` on a clean install (12.0.0 and 12.1.0b1 renamed/removed the classes).
+   Pinned exactly in pyproject.toml [agents] and src/requirements.txt.
+2. KB blob upload failed with `AuthorizationFailure`. The deployer's Storage Blob Data
+   Contributor role assignment (storage.bicep) had not finished propagating (data-plane
+   RBAC latency) when postprovision ran. Added retry-with-backoff (0/15/30/45/60s) around
+   the upload in scripts/postprovision.py and corrected the warning to name RBAC
+   propagation as the primary cause. Upload stays non-fatal/archival-only (grounding uses
+   local assets/kb -> AI Search directly).
+
+**Why:** Make `azd up` deterministic on clean machines. The moving preview SDK must be
+exact-pinned; RBAC propagation is a timing issue best handled by retry, not a hard fail.
+Verified: 123 tests pass, ruff clean, all 7 preview imports resolve under 11.7.0b2.
+
 ### 2026-07-10: De-bloat codebase + refresh AG-UI docs
 **By:** Squad (Coordinator)
 **What:** Removed the dead pre-AG-UI HTTP chat surface and refreshed docs to the
@@ -2067,4 +2088,5 @@ knowledge base cannot answer questions about a specific ticket, so KB retrieval 
 a status/update intent is always wrong and wastes a hop. Classifying intent first
 makes routing deterministic: help-seeking deflects, ticket-management goes straight
 to ServiceNow.
+
 

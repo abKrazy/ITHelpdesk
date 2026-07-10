@@ -35,7 +35,14 @@ azure-ai-projects==2.3.0
 openai>=1.40
 
 # --- Triage KB grounding / AI Search indexing (pyproject [agents]) ---
-azure-search-documents>=11.5.0
+# PIN (do not loosen): the Foundry IQ agentic-retrieval preview models this code
+# imports (KnowledgeBase, SearchIndexKnowledgeSource, KnowledgeRetrievalOutputMode,
+# KnowledgeRetrievalMinimalReasoningEffort, ...) exist ONLY in 11.7.0b2. Stable
+# 12.0.0 and the newer 12.1.0b1 beta renamed/removed them, so a range like
+# ">=11.5.0" silently resolves to an incompatible release and Foundry agent setup
+# crashes with "cannot import name 'KnowledgeBase'". See ensure_kb_knowledge_base
+# in src/helpdesk/agents/definitions/triage_agent.py.
+azure-search-documents==11.7.0b2
 
 # --- ServiceNow / APIM MCP client (pyproject [servicenow]) ---
 httpx>=0.27

@@ -2,6 +2,31 @@
 
 ## Active Decisions
 
+### 2026-07-10: UI composer fix + B1→B2 plan correction + B3-build workaround
+
+**By:** Squad (Coordinator), for @abKrazy
+**What:** Fixed two UI complaints on the live CopilotKit frontend and corrected an App Service plan drift discovered while deploying.
+
+**UI composer fix (frontend/components/HelpdeskChat.tsx + frontend/app/globals.css):**
+- Replaced the small single-line `<input>` with an auto-growing multi-line `<textarea>` (min-height 52px, grows to 200px) for a roomier, modern chat box.
+- Added **Enter-to-send / Shift+Enter-for-newline** (keydown handler + `requestSubmit()`), with height reset on send.
+- Made the Send button's enabled vs disabled states visually distinct (disabled = grey `#cbd5e1` + `not-allowed`; enabled = solid blue) so it's obvious when a message can be sent. The button was always functionally enabled on non-empty input (`disabled={isRunning || !input.trim()}`); the complaint was a visual/affordance issue, now resolved.
+- Local `next build` (TS + lint) passed. Commit `9518dba`.
+
+**Plan SKU drift (B1 → B2):**
+- The live App Service plan `plan-ztk6zx5aedqtc` was running **B1 (1.75GB)**, not the B2 the user requested and that `infra/modules/appservice.bicep` (line 70, hardcoded `name: 'B2'`) declares. This was live drift — the committed infra is already correct, so a fresh `azd up` provisions B2. Set the live plan to **B2** to match.
+
+**Deploy workaround (B1 OOM → temporary B3 for the build):**
+- First `azd deploy ui` attempt for the composer fix **failed**: the Oryx build itself succeeded (Next route table printed), but the deploy died during the "Zipping existing node_modules folder" finalize step — a Kudu OOM on the 1.75GB B1 while the shared `api` app was hot from live testing.
+- Cross-platform local-build zip-deploy was rejected (Windows→Linux native-binary risk: SWC/sharp). The native Linux Oryx build is correct; only memory was the issue.
+- Fix: temporarily scaled the plan to **B3 (7GB)**, re-ran `azd deploy ui` (succeeded in 5m36s), verified the new build live (`<textarea>` + "Shift+Enter" placeholder in served HTML), then scaled back to **B2**.
+
+**Operational note for the accelerator:** heavy Next 16 + CopilotKit builds are tight on Basic B1/B2 when the shared `api` app is under load. For live hackathons, either build the UI when the api app is idle, or momentarily scale the plan up for the UI deploy. Consider documenting this in README troubleshooting.
+
+**Why:** Directly addresses the user's two UI complaints (tiny text box, unclear Send button) and removes a latent one-click-deploy reliability risk (B1 OOM). Invariant preserved: change confined to the UI layer; backend `/agui`, Orchestrator, Triage, and Incident agents untouched.
+
+---
+
 ### 2026-07-10: AG-UI live cutover complete — deploy-deps fix + full HITL verification
 
 **By:** Squad (Coordinator), for @abKrazy

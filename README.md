@@ -16,6 +16,8 @@ the ServiceNow Table API as MCP tools), and deployed end-to-end with the
 > 📐 [`ARCHITECTURE.md`](./ARCHITECTURE.md) is the source of truth for components,
 > data flows, and cross-component contracts. This README is the **deploy & run**
 > guide for a fresh clone.
+>
+> 🌐 Prefer a browsable version? Open the **[project landing page](https://abkrazy.github.io/ITHelpdesk/)** — this README and the architecture docs with a left-nav menu.
 
 ---
 

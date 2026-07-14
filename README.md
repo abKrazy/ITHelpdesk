@@ -291,6 +291,20 @@ azd env get-value SERVICE_UI_URI
 Open that URL in a browser and start chatting. `SERVICE_API_URI` is the backend
 health/AG-UI app; end users should use `SERVICE_UI_URI` (the Node UI).
 
+**Confirm the App Service plan is Basic B2.** The `api` and `ui` apps share one
+plan, so both run on the same tier. Older clones provisioned the plan at B1 — if you
+deployed from a pre-B2 revision, reconcile it (the current template already targets
+B2):
+
+```bash
+# Sku column should read B2 (Basic); NumberOfSites should be 2 (api + ui).
+az appservice plan list -g <your-resource-group> -o table
+
+# If it still shows B1, either re-run `azd provision` (declarative — applies B2)
+# or rescale in place immediately:
+az appservice plan update -g <your-resource-group> -n plan-<token> --sku B2
+```
+
 ### Human approval for ServiceNow writes
 
 Create and update requests are gated in the CopilotKit UI with a **Human approval
@@ -388,6 +402,7 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | Foundry agent setup fails with **`cannot import name 'KnowledgeBase'`** (or another `Knowledge*`/`SearchIndex*` model) | The local Python running the postprovision hook had a drifted `azure-search-documents` — the Foundry IQ agentic-retrieval preview models live **only** in `11.7.0b2` | The postprovision hook now builds an isolated `.venv-provision/` and installs the exact pins from `scripts/requirements-postprovision.txt` before running — so the deployer's global Python version no longer matters. Just ensure **Python 3.11+** is on `PATH` and re-run `azd provision`. |
 | Lookup of `INC0000057` returns "not found" against your own instance | The example incidents only exist on the reference PDI | Use real incident numbers from your instance, or create one first via the create flow. |
 | UI loads but chat errors | postprovision didn't finish (no index / agents), or the Node UI cannot reach the Python API | Re-run `azd provision` (re-triggers the idempotent postprovision hook), verify `AGUI_BACKEND_URL=https://<api-host>/agui`, and check `azd env get-value SERVICE_API_URI`. |
+| App Service plan shows **B1** (UI feels underpowered) | The environment was provisioned from a pre-B2 clone. The `api` + `ui` apps **share one plan**, so both are on the same tier — the current template targets **B2**. | `az appservice plan update -g <rg> -n plan-<token> --sku B2` (instant, in-place) or re-run `azd provision`. Confirm with `az appservice plan list -g <rg> -o table`. |
 
 ### Deploying into a governed / network-restricted subscription
 

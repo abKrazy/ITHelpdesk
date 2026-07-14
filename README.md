@@ -383,10 +383,45 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
 | Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
 | ServiceNow calls return **401/403** | Wrong username/password, or user lacks the `itil` role | Re-run and re-enter creds: `azd env set SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, ensure `itil` role, then `azd provision`. |
-| postprovision warns **KB blob upload skipped (AuthorizationFailure)** | The deployer's **Storage Blob Data Contributor** role assignment hadn't finished propagating when postprovision ran (data-plane RBAC can take a few minutes) | **Non-fatal** — the KB blob copy is archival-only; triage grounding reads `assets/kb` locally and indexes it straight into AI Search, so it still works. postprovision now retries with backoff; if it still skips, re-run `azd provision` once RBAC has propagated. |
+| postprovision fails with **`... search.windows.net timed out (connect timeout)`** or **`... is unreachable from this machine`** | The postprovision hook runs the AI Search index build **from your machine**, but the Search (or Storage) endpoint is unreachable — almost always because a **governed subscription's Azure Policy disabled public network access** on the data-plane resources. A laptop can't connect. | See **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** below. Fastest fix: run `azd up` from **Azure Cloud Shell** (or an Azure VM in the same tenant), which reaches the endpoints as a trusted Azure service. Alternatively, enable public network access on the Search + Storage resources (or add your client IP to their firewall) and re-run `azd provision`. The build now fails fast (~30s) with this guidance instead of hanging 5 min. |
+| postprovision warns **KB blob upload skipped (AuthorizationFailure)** | The deployer's **Storage Blob Data Contributor** role assignment hadn't finished propagating when postprovision ran (data-plane RBAC can take a few minutes), **or** the storage endpoint is network-locked (see the governed-subscription row above). | **Non-fatal** — the KB blob copy is archival-only; triage grounding reads `assets/kb` locally and indexes it straight into AI Search, so it still works. postprovision retries with backoff; if it still skips due to RBAC, re-run `azd provision` once the role has propagated. |
 | Foundry agent setup fails with **`cannot import name 'KnowledgeBase'`** (or another `Knowledge*`/`SearchIndex*` model) | The local Python running the postprovision hook had a drifted `azure-search-documents` — the Foundry IQ agentic-retrieval preview models live **only** in `11.7.0b2` | The postprovision hook now builds an isolated `.venv-provision/` and installs the exact pins from `scripts/requirements-postprovision.txt` before running — so the deployer's global Python version no longer matters. Just ensure **Python 3.11+** is on `PATH` and re-run `azd provision`. |
 | Lookup of `INC0000057` returns "not found" against your own instance | The example incidents only exist on the reference PDI | Use real incident numbers from your instance, or create one first via the create flow. |
 | UI loads but chat errors | postprovision didn't finish (no index / agents), or the Node UI cannot reach the Python API | Re-run `azd provision` (re-triggers the idempotent postprovision hook), verify `AGUI_BACKEND_URL=https://<api-host>/agui`, and check `azd env get-value SERVICE_API_URI`. |
+
+### Deploying into a governed / network-restricted subscription
+
+The `postprovision` hook does the data-plane wiring that Bicep can't: it builds the
+AI Search index, uploads KB docs to Storage, and registers the Foundry agents. **That
+work runs from the machine that ran `azd up`, over the public internet, using your
+`az login` identity.** It therefore needs network line-of-sight to the AI Search,
+Storage, and Foundry endpoints.
+
+Many enterprise subscriptions apply an **Azure Policy that disables public network
+access** on PaaS data services (this overrides the `publicNetworkAccess: enabled` the
+templates request). When that happens, a laptop simply cannot reach the AI Search
+endpoint — you'll see a **connect timeout** (Search) and/or **403 AuthorizationFailure**
+(Storage), even though `azd provision` itself succeeded.
+
+You have three options, easiest first:
+
+1. **Run `azd up` from Azure Cloud Shell** (`https://shell.azure.com`) or an Azure VM
+   in the same tenant/region. Code running inside Azure is treated as a trusted Azure
+   service, so it reaches the endpoints even when public access is off. This is the
+   recommended path for locked-down tenants and needs **no infra changes**. (Clone the
+   repo, `azd auth login`, `azd up`.)
+2. **Allow your client** on the resources: enable public network access on the AI
+   Search service and Storage account (or add your egress IP to their firewalls), then
+   re-run `azd provision`. Requires permission to change those network settings.
+3. **Add private networking** (VNet + private endpoints) and run the setup from inside
+   the VNet — the most secure but heaviest option; out of scope for the quick-start.
+
+**Also required (all paths):** the deployer needs the data-plane roles the templates
+assign — **Search Index Data Contributor** + **Search Service Contributor** and
+**Storage Blob Data Contributor**. These are created during `azd provision`, but Azure
+data-plane RBAC can take a few minutes to propagate; postprovision retries the
+authorization window automatically. If it still reports "unauthorized after N
+attempts," wait a couple minutes and re-run `azd provision`.
 
 ---
 

@@ -25,6 +25,14 @@ param managedIdentityPrincipalId string
 @description('Object ID of the deploying user (optional local-dev data access).')
 param principalId string = ''
 
+@description('Principal type of the deployer for role assignments (User for interactive azd up, ServicePrincipal for CI).')
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param deployerPrincipalType string = 'User'
+
 // Role definition IDs (built-in).
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
@@ -81,6 +89,7 @@ resource userBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: principalId
+    principalType: deployerPrincipalType
   }
 }
 

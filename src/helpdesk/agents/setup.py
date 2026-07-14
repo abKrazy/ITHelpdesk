@@ -15,12 +15,95 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 from .embeddings import EMBEDDING_DIMENSIONS
 from .kb import chunk_doc, load_local_kb
 
 def _log(msg: str) -> None:
     print(f"[setup] {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Data-plane resilience helpers
+#
+# postprovision runs from the DEPLOYER'S machine against public data-plane
+# endpoints (AI Search, Storage) using the deployer's `az login` identity. Two
+# environmental failure modes are common and are NOT code bugs:
+#   * 401/403 while the data-plane role assignment (created during `azd provision`)
+#     is still propagating — transient, clears within a few minutes → retry.
+#   * connect timeout because a governed subscription's Azure Policy disabled
+#     public network access on the endpoint — the laptop simply cannot reach it →
+#     fail FAST with an actionable hint instead of the SDK-default 300s hang.
+# ---------------------------------------------------------------------------
+
+# Bounded transport timeouts (seconds). 30s connect surfaces an unreachable
+# (policy-locked) endpoint quickly instead of the azure-core default 300s.
+DATAPLANE_CLIENT_TIMEOUTS = {"connection_timeout": 30, "read_timeout": 120}
+
+# Backoff schedule covering data-plane RBAC propagation.
+_AUTH_RETRY_DELAYS = (0, 15, 30, 45, 60)
+
+
+def _is_auth_propagation_error(exc: Exception) -> bool:
+    """True for the transient 401/403 seen while a data-plane role assignment is
+    still propagating (assignment exists in ARM but is not yet effective)."""
+    status = getattr(exc, "status_code", None)
+    code = getattr(getattr(exc, "error", None), "code", "") or ""
+    text = str(exc)
+    return (
+        status in (401, 403)
+        or code in {"AuthorizationFailure", "Forbidden"}
+        or "AuthorizationFailure" in text
+        or "not authorized" in text.lower()
+    )
+
+
+def _network_unreachable_hint(endpoint: str, exc: Exception) -> str:
+    return (
+        f"Could not reach '{endpoint}' from this machine ({type(exc).__name__}). "
+        "This postprovision step runs from YOUR machine, and the data-plane endpoint "
+        "is unreachable over the network. In a governed subscription an Azure Policy "
+        "often disables public network access on AI Search / Storage, so a laptop "
+        "cannot connect. Fixes: (1) run `azd up` from Azure Cloud Shell or an Azure VM "
+        "in the same tenant (trusted-Azure-service access reaches the endpoint), or "
+        "(2) enable public network access on the Search + Storage resources (or add "
+        "your client IP to their firewall), then re-run `azd provision`. See the "
+        "README section 'Deploying into a governed / network-restricted subscription'."
+    )
+
+
+def _run_with_auth_retry(fn, *, what: str, endpoint: str):
+    """Run ``fn()`` with retry limited to the RBAC-propagation 401/403 window.
+
+    Network-unreachable errors (connect timeout / DNS / refused) fail fast with an
+    actionable hint — retrying a policy-locked endpoint only wastes minutes.
+    """
+    from azure.core.exceptions import ServiceRequestError
+
+    last: Exception | None = None
+    for attempt, delay in enumerate(_AUTH_RETRY_DELAYS, start=1):
+        if delay:
+            _log(
+                f"{what} not yet authorized; waiting {delay}s for data-plane RBAC to "
+                f"propagate (attempt {attempt}/{len(_AUTH_RETRY_DELAYS)})..."
+            )
+            time.sleep(delay)
+        try:
+            return fn()
+        except ServiceRequestError as exc:  # transport: connect/read timeout, DNS, refused
+            raise RuntimeError(_network_unreachable_hint(endpoint, exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_auth_propagation_error(exc):
+                continue
+            raise
+    raise RuntimeError(
+        f"{what} still unauthorized after {len(_AUTH_RETRY_DELAYS)} attempts waiting for "
+        f"data-plane RBAC to propagate. Confirm the deployer has the required Search "
+        f"data-plane roles ('Search Index Data Contributor' + 'Search Service "
+        f"Contributor') on {endpoint}, then re-run `azd provision`. Last error: {last}"
+    ) from last
 
 
 # ---------------------------------------------------------------------------
@@ -153,13 +236,19 @@ def build_search_index(
 
     credential = get_credential()
 
-    index_client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    index_client = SearchIndexClient(
+        endpoint=search_endpoint, credential=credential, **DATAPLANE_CLIENT_TIMEOUTS
+    )
     index = _build_index_definition(
         index_name,
         openai_endpoint=openai_endpoint,
         embedding_deployment=embedding_deployment,
     )
-    index_client.create_or_update_index(index)  # idempotent
+    _run_with_auth_retry(
+        lambda: index_client.create_or_update_index(index),  # idempotent
+        what="AI Search index create/update",
+        endpoint=search_endpoint,
+    )
     _log(f"index '{index_name}' created/updated on {search_endpoint}")
 
     docs = load_local_kb()
@@ -182,10 +271,17 @@ def build_search_index(
             )
 
     search_client = SearchClient(
-        endpoint=search_endpoint, index_name=index_name, credential=credential
+        endpoint=search_endpoint,
+        index_name=index_name,
+        credential=credential,
+        **DATAPLANE_CLIENT_TIMEOUTS,
     )
     # mergeOrUpload keyed on stable ids => idempotent re-runs.
-    results = search_client.merge_or_upload_documents(documents=payload)
+    results = _run_with_auth_retry(
+        lambda: search_client.merge_or_upload_documents(documents=payload),
+        what="AI Search document upload",
+        endpoint=search_endpoint,
+    )
     _verify_upload_results(results)
     _log(f"uploaded {len(payload)} chunks from {len(docs)} KB docs")
 

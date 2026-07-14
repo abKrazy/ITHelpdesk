@@ -24,6 +24,14 @@ param managedIdentityPrincipalId string
 @description('Object ID of the deploying user (optional local-dev data access).')
 param principalId string = ''
 
+@description('Principal type of the deployer for role assignments (User for interactive azd up, ServicePrincipal for CI).')
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param deployerPrincipalType string = 'User'
+
 // Role definition IDs (built-in).
 var searchIndexDataContributorRoleId = '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
 var searchIndexDataReaderRoleId = '1407120a-92aa-4202-b7e9-c0e197c71c8f'
@@ -89,6 +97,7 @@ resource userIndexDataContributor 'Microsoft.Authorization/roleAssignments@2022-
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchIndexDataContributorRoleId)
     principalId: principalId
+    principalType: deployerPrincipalType
   }
 }
 
@@ -98,6 +107,7 @@ resource userServiceContributor 'Microsoft.Authorization/roleAssignments@2022-04
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchServiceContributorRoleId)
     principalId: principalId
+    principalType: deployerPrincipalType
   }
 }
 

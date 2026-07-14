@@ -1,6 +1,15 @@
 # Squad Decisions
 
 ## Active Decisions
+### 2026-07-14: postprovision data-plane resilience (network + RBAC) — permanent fix
+**By:** Squad (Coordinator), requested by arbaner
+**What:** Hardened the azd `postprovision` hook against the two environmental failures a governed subscription causes when the data-plane setup runs from the deployer's laptop:
+- `build_search_index()` (setup.py) now builds Search clients with bounded transport timeouts (connect=30s, read=120s) and runs each call through `_run_with_auth_retry()`: transient 401/403 (RBAC propagation) are retried with backoff (0/15/30/45/60s); network-unreachable errors fail FAST (~30s) with an actionable hint (run from Azure Cloud Shell / enable public network access) instead of the SDK-default 300s hang + raw traceback.
+- Blob upload uses the same connect timeout (30s).
+- `postprovision.py main()` now strips `AZURE_MANAGED_IDENTITY_CLIENT_ID` / `AZURE_CLIENT_ID` before the (non-mock) run so `get_credential()` uses the deployer's `az login` identity — the principal the role assignments target — instead of probing IMDS for a managed identity absent on a laptop (and avoids wrong-identity auth on Azure-hosted runners).
+- Bicep: deployer role assignments (storage `userBlobContributor`, search `userIndexDataContributor`/`userServiceContributor`) now set `principalType` via new `deployerPrincipalType` param (default `User`, wired from `AZURE_PRINCIPAL_TYPE`) to avoid transient ARM PrincipalNotFound.
+- README: new "Deploying into a governed / network-restricted subscription" section + refreshed troubleshooting rows.
+**Why:** RCA of repeated fresh-deploy failures showed the venv fix resolved the KnowledgeBase ImportError; remaining failures were environmental — Search endpoint TCP-unreachable (governed-tenant policy disabling public network access) and Storage 403 (RBAC propagation / network). No laptop-side code can reach a policy-disabled endpoint, so the permanent fix is: (a) make transient RBAC cases self-heal, (b) fail fast with precise remediation for hard network locks, and (c) document the Cloud Shell path that runs setup as a trusted Azure service.
 
 ### 2026-07-13T21:56:25-05:00: postprovision hook installs pinned deps into an isolated venv
 

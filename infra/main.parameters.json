@@ -11,6 +11,9 @@
     "principalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
     },
+    "deployerPrincipalType": {
+      "value": "${AZURE_PRINCIPAL_TYPE=User}"
+    },
     "serviceNowInstanceUrl": {
       "value": "${SERVICENOW_INSTANCE_URL}"
     },

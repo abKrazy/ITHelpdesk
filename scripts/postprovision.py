@@ -64,7 +64,9 @@ def upload_kb_docs() -> None:
 
     from helpdesk.shared import get_credential
 
-    service = BlobServiceClient(account_url=blob_endpoint, credential=get_credential())
+    service = BlobServiceClient(
+        account_url=blob_endpoint, credential=get_credential(), connection_timeout=30
+    )
 
     # The deployer's "Storage Blob Data Contributor" role assignment is created
     # during `azd provision`, but Azure data-plane RBAC can take a few minutes to
@@ -219,8 +221,30 @@ def create_hosted_orchestrator() -> None:
     )
 
 
+def _use_deployer_credential() -> None:
+    """Force the ambient deployer identity for this local hook run.
+
+    postprovision runs on the DEPLOYER'S machine (via the azd postprovision hook),
+    NOT inside Azure. Bicep exports ``AZURE_MANAGED_IDENTITY_CLIENT_ID`` (and azd may
+    set ``AZURE_CLIENT_ID``), which makes ``get_credential()`` build
+    ``DefaultAzureCredential(managed_identity_client_id=...)``. On a laptop that only
+    wastes time probing IMDS for a managed identity that isn't present; on an
+    Azure-hosted runner it can auth as the WRONG identity. Dropping these env vars for
+    the worker process makes DefaultAzureCredential use the deployer's ``az login``
+    identity — which is exactly the principal the data-plane role assignments target.
+    """
+    for var in ("AZURE_MANAGED_IDENTITY_CLIENT_ID", "AZURE_CLIENT_ID"):
+        if os.environ.pop(var, None):
+            print(
+                f"[postprovision] local hook: using deployer credential "
+                f"(ignoring {var} for data-plane setup)"
+            )
+
+
 def main() -> None:
     print("[postprovision] starting")
+    if not _mock():
+        _use_deployer_credential()
     upload_kb_docs()
     build_search_index()
     create_foundry_agents()

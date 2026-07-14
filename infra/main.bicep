@@ -44,6 +44,14 @@ param location string
 @description('Object ID of the deploying user/principal. azd sets AZURE_PRINCIPAL_ID. Granted data-plane roles for local dev (Search/Storage/Foundry).')
 param principalId string = ''
 
+@description('Principal type of the deployer (azd sets AZURE_PRINCIPAL_TYPE). Used on deployer role assignments; defaults to User for interactive azd up.')
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param deployerPrincipalType string = 'User'
+
 // --- ServiceNow inputs (collected by scripts/preprovision) -------------------
 @description('ServiceNow instance base URL (e.g. https://<your-instance>.service-now.com). Required — collected by scripts/preprovision; no default.')
 @minLength(1)
@@ -166,6 +174,7 @@ module storage './modules/storage.bicep' = {
     kbContainerName: kbContainerName
     managedIdentityPrincipalId: identity.outputs.principalId
     principalId: principalId
+    deployerPrincipalType: deployerPrincipalType
   }
 }
 
@@ -179,6 +188,7 @@ module search './modules/search.bicep' = {
     searchServiceName: '${abbrs.searchSearchServices}${resourceToken}'
     managedIdentityPrincipalId: identity.outputs.principalId
     principalId: principalId
+    deployerPrincipalType: deployerPrincipalType
   }
 }
 

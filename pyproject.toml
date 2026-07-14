@@ -35,6 +35,7 @@ agents = [
   # "cannot import name 'KnowledgeBase'". Keep this exact-pinned. See src/requirements.txt.
   "azure-search-documents==11.7.0b2",
   "azure-ai-projects==2.3.0",
+  "azure-storage-blob>=12.19",     # KB archival blob upload (scripts/postprovision.py)
 ]
 # Owner: Switch — ServiceNow / APIM MCP client
 servicenow = [

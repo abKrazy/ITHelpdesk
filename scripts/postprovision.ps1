@@ -33,7 +33,26 @@ if (-not $mock -and $env:AZURE_CONTAINER_REGISTRY_NAME) {
 }
 
 # azd exports outputs as env vars into this process; the Python worker reads them.
-python "$PSScriptRoot/postprovision.py"
+# Run the worker inside an isolated venv with PINNED deps so it never depends on
+# whatever the deployer happens to have in global site-packages. A drifted global
+# azure-search-documents was crashing Foundry setup with "cannot import name
+# 'KnowledgeBase'". Mock mode needs no Azure SDKs, so it uses system Python directly.
+if ($mock) {
+  python "$PSScriptRoot/postprovision.py"
+} else {
+  $venvDir = Join-Path (Resolve-Path "$PSScriptRoot/..") ".venv-provision"
+  $venvPy = Join-Path $venvDir "Scripts/python.exe"
+  if (-not (Test-Path $venvPy)) {
+    Write-Host "Creating provisioning venv at $venvDir ..."
+    python -m venv $venvDir
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create provisioning venv"; exit 1 }
+  }
+  Write-Host "Installing pinned postprovision dependencies (scripts/requirements-postprovision.txt)..."
+  & $venvPy -m pip install --disable-pip-version-check --quiet --upgrade pip
+  & $venvPy -m pip install --disable-pip-version-check --quiet -r "$PSScriptRoot/requirements-postprovision.txt"
+  if ($LASTEXITCODE -ne 0) { Write-Error "Failed to install postprovision dependencies"; exit 1 }
+  & $venvPy "$PSScriptRoot/postprovision.py"
+}
 if ($LASTEXITCODE -ne 0) {
   Write-Error "postprovision.py failed with exit code $LASTEXITCODE"
   exit $LASTEXITCODE

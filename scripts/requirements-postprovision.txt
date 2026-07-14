@@ -1,0 +1,29 @@
+# =====================================================================
+# Dependency closure for the azd postprovision worker (scripts/postprovision.py).
+# =====================================================================
+# The postprovision hook (scripts/postprovision.ps1/.sh) installs THIS file into
+# an isolated .venv-provision and runs the worker with that venv's Python — so the
+# worker never depends on whatever the deployer happens to have in their GLOBAL
+# site-packages. A drifted global azure-search-documents was crashing Foundry
+# agent setup with "cannot import name 'KnowledgeBase'". Keep versions in lockstep
+# with pyproject.toml.
+
+# --- Auth / config (pyproject [project].dependencies) ---
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8
+python-dotenv>=1.0
+pydantic>=2.7
+
+# --- Foundry agents + hosted-orchestrator registration (pyproject [orchestrator]) ---
+azure-ai-projects==2.3.0
+openai>=1.40
+
+# --- Triage KB grounding / AI Search indexing (pyproject [agents]) ---
+# EXACT PIN (do not loosen): the Foundry IQ agentic-retrieval preview models this
+# code imports (KnowledgeBase, SearchIndexKnowledgeSource, KnowledgeRetrievalOutputMode,
+# KnowledgeRetrievalMinimalReasoningEffort, ...) exist ONLY in 11.7.0b2. Stable 12.0.0
+# and beta 12.1.0b1 renamed/removed them.
+azure-search-documents==11.7.0b2
+
+# --- KB archival blob upload (postprovision.upload_kb_docs) ---
+azure-storage-blob>=12.19

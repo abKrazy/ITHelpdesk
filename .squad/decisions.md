@@ -2,6 +2,29 @@
 
 ## Active Decisions
 
+### 2026-07-13T21:56:25-05:00: postprovision hook installs pinned deps into an isolated venv
+
+**By:** Tank + Trinity (via Squad Coordinator, req. by abKrazy)
+**What:** A fresh deploy still failed at `cmdhook-postprovision` with
+`ImportError: cannot import name 'KnowledgeBase'`. Root cause: the postprovision
+shell hook ran `python scripts/postprovision.py` against the DEPLOYER'S GLOBAL
+Python (their `Python312\site-packages`), so the `azure-search-documents==11.7.0b2`
+pin in pyproject.toml / src/requirements.txt was never installed for the local hook
+run (those manifests only drive the App Service Oryx build, not the local hook).
+Also discovered `azure-storage-blob` was never declared as a dependency.
+
+Fix: postprovision.ps1/.sh now create an isolated `.venv-provision/` and
+`pip install -r scripts/requirements-postprovision.txt` (new file, exact pins incl.
+azure-search-documents==11.7.0b2, azure-ai-projects==2.3.0, azure-storage-blob, openai,
+azure-identity) BEFORE running the worker with that venv's Python. Mock mode still uses
+system Python (no Azure SDKs needed). Added azure-storage-blob to pyproject [agents];
+gitignored .venv-provision/.
+
+**Why:** Make `azd up` hermetic on any hackathon laptop regardless of the deployer's
+global Python packages. Verified in a CLEAN venv: 11.7.0b2 installs, all 7 KB preview
+imports resolve, storage/projects/openai/identity import; 123 tests pass; ps1 parses;
+mock path intact. (KB blob AuthorizationFailure remains non-fatal/archival-only.)
+
 ### 2026-07-10T14:40:04-05:00: Pin azure-search-documents==11.7.0b2; retry KB blob upload for RBAC propagation
 
 **By:** Trinity (via Squad Coordinator, req. by abKrazy)
@@ -2088,5 +2111,6 @@ knowledge base cannot answer questions about a specific ticket, so KB retrieval 
 a status/update intent is always wrong and wastes a hop. Classifying intent first
 makes routing deterministic: help-seeking deflects, ticket-management goes straight
 to ServiceNow.
+
 
 

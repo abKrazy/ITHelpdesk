@@ -15,13 +15,13 @@
       "value": "${AZURE_PRINCIPAL_TYPE=User}"
     },
     "serviceNowInstanceUrl": {
-      "value": "${SERVICENOW_INSTANCE_URL}"
+      "value": "${SERVICENOW_INSTANCE_URL=}"
     },
     "serviceNowUsername": {
-      "value": "${SERVICENOW_USERNAME}"
+      "value": "${SERVICENOW_USERNAME=}"
     },
     "serviceNowPassword": {
-      "value": "${SERVICENOW_PASSWORD}"
+      "value": "${SERVICENOW_PASSWORD=}"
     },
     "chatModelDeploymentName": {
       "value": "${AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4}"

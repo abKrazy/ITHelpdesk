@@ -1,6 +1,10 @@
 # Squad Decisions
 
 ## Active Decisions
+### 2026-07-14: Fix duplicate ServiceNow prompts on azd up
+**By:** Squad (Coordinator), requested by arbaner
+**What:** main.parameters.json mapped serviceNowInstanceUrl/Username/Password with bare `${VAR}` (no inline default), so azd prompted for all three at provision-time parameter resolution IN ADDITION to the preprovision hook's own Read-Host prompts — user saw each value asked twice. Added empty inline defaults (`${SERVICENOW_INSTANCE_URL=}`, `${SERVICENOW_USERNAME=}`, `${SERVICENOW_PASSWORD=}`) so azd never prompts for them; the preprovision hook stays the single interactive source (it sets the real values into the azd env before Bicep resolves params). serviceNowInstanceUrl keeps @minLength(1) in bicep — safe because the hook loops until a non-empty URL is provided before provision.
+**Why:** Every other param used `${VAR=default}` and never double-prompted; only the three ServiceNow params lacked defaults, exactly matching the reported "url, username, password asked multiple times."
 ### 2026-07-14: postprovision data-plane resilience (network + RBAC) — permanent fix
 **By:** Squad (Coordinator), requested by arbaner
 **What:** Hardened the azd `postprovision` hook against the two environmental failures a governed subscription causes when the data-plane setup runs from the deployer's laptop:

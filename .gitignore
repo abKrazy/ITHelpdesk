@@ -40,3 +40,6 @@ frontend/out/
 # --- Local env / secrets (never commit) ---
 .env
 *.local.env
+
+# Local session transcripts / scratch (never commit)
+_session-transcript-*.md

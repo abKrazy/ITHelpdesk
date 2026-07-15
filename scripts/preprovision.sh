@@ -7,6 +7,19 @@
 # -----------------------------------------------------------------------------
 set -e
 
+SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -P "$SCRIPT_DIR/.." && pwd)
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+
+if [ ! -x "$VENV_PYTHON" ]; then
+  python -m venv "$REPO_ROOT/.venv"
+fi
+
+(
+  cd "$REPO_ROOT"
+  "$VENV_PYTHON" -m pip install '.[agents]'
+)
+
 get_val() { azd env get-value "$1" 2>/dev/null || true; }
 
 if [ -z "$(get_val SERVICENOW_INSTANCE_URL)" ]; then

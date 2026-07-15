@@ -9,6 +9,30 @@
 # -----------------------------------------------------------------------------
 $ErrorActionPreference = 'Stop'
 
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$venvDir = Join-Path $repoRoot '.venv'
+$venvPython = Join-Path $venvDir 'Scripts\python.exe'
+
+if (-not (Test-Path $venvPython)) {
+  python -m venv $venvDir
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "python -m venv failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+  }
+}
+
+Push-Location $repoRoot
+try {
+  & $venvPython -m pip install ".[agents]"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Installing hook dependencies failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+  }
+}
+finally {
+  Pop-Location
+}
+
 function Get-AzdEnvValue([string]$key) {
   $val = (azd env get-value $key 2>$null)
   if ($LASTEXITCODE -ne 0) { return '' }

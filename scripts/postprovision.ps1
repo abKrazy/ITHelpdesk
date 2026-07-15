@@ -33,7 +33,8 @@ if (-not $mock -and $env:AZURE_CONTAINER_REGISTRY_NAME) {
 }
 
 # azd exports outputs as env vars into this process; the Python worker reads them.
-python "$PSScriptRoot/postprovision.py"
+$venvPython = (Resolve-Path (Join-Path $PSScriptRoot '..\.venv\Scripts\python.exe')).Path
+& $venvPython "$PSScriptRoot/postprovision.py"
 if ($LASTEXITCODE -ne 0) {
   Write-Error "postprovision.py failed with exit code $LASTEXITCODE"
   exit $LASTEXITCODE

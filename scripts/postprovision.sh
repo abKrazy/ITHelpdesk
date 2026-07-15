@@ -28,4 +28,4 @@ if [ "$MOCK" -eq 0 ] && [ -n "${AZURE_CONTAINER_REGISTRY_NAME:-}" ]; then
   echo "Orchestrator image: $ORCHESTRATOR_IMAGE"
 fi
 
-python "$(dirname "$0")/postprovision.py"
+"$(dirname "$0")/../.venv/bin/python" "$(dirname "$0")/postprovision.py"

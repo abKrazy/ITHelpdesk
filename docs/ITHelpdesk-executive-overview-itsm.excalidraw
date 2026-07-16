@@ -1,0 +1,776 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "copilot",
+  "elements": [
+    {
+      "type": "text",
+      "id": "lbl_0_a1fdh",
+      "x": 60,
+      "y": 34,
+      "width": 1000,
+      "height": 50,
+      "text": "IT Helpdesk AI Assistant",
+      "fontSize": 36,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "left",
+      "verticalAlign": "top"
+    },
+    {
+      "type": "text",
+      "id": "lbl_1_mufol",
+      "x": 62,
+      "y": 92,
+      "width": 1040,
+      "height": 30,
+      "text": "Employees get instant answers and self-service ticketing — with a human approving every change.",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "left",
+      "verticalAlign": "top"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_2_2z5dl",
+      "x": 560,
+      "y": 160,
+      "width": 260,
+      "height": 80,
+      "strokeColor": "#495057",
+      "backgroundColor": "#e9ecef",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_3_94w35"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_3_94w35",
+      "containerId": "rect_2_2z5dl",
+      "x": 570,
+      "y": 170,
+      "width": 240,
+      "height": 60,
+      "text": "👤  Employee\nAsks a question in plain language",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_4_rx2xv",
+      "x": 560,
+      "y": 290,
+      "width": 260,
+      "height": 80,
+      "strokeColor": "#0078D4",
+      "backgroundColor": "#CFE4FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_5_bgu5t"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_5_bgu5t",
+      "containerId": "rect_4_rx2xv",
+      "x": 570,
+      "y": 300,
+      "width": 240,
+      "height": 60,
+      "text": "💬  Chat Assistant\nSimple web chat experience",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_6_bu3iz",
+      "x": 510,
+      "y": 420,
+      "width": 360,
+      "height": 100,
+      "strokeColor": "#5C2D91",
+      "backgroundColor": "#E8DAEF",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_7_xqhft"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_7_xqhft",
+      "containerId": "rect_6_bu3iz",
+      "x": 520,
+      "y": 430,
+      "width": 340,
+      "height": 80,
+      "text": "🧠  AI Assistant\nUnderstands the request and routes it",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_8_mpzxp",
+      "x": 300,
+      "y": 600,
+      "width": 300,
+      "height": 110,
+      "strokeColor": "#107C10",
+      "backgroundColor": "#DFF6DD",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_9_54v3w"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_9_54v3w",
+      "containerId": "rect_8_mpzxp",
+      "x": 310,
+      "y": 610,
+      "width": 280,
+      "height": 90,
+      "text": "🔎  Triage & Resolve\nAnswers from company knowledge —\nno ticket needed",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_a_gwhqn",
+      "x": 780,
+      "y": 600,
+      "width": 300,
+      "height": 110,
+      "strokeColor": "#0c8599",
+      "backgroundColor": "#C5F6FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_b_deg27"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_b_deg27",
+      "containerId": "rect_a_gwhqn",
+      "x": 790,
+      "y": 610,
+      "width": 280,
+      "height": 90,
+      "text": "🎫  Ticketing Specialist\nCreate • Check • Update\nITSM tickets",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_c_hjmzr",
+      "x": 300,
+      "y": 790,
+      "width": 300,
+      "height": 90,
+      "strokeColor": "#107C10",
+      "backgroundColor": "#DFF6DD",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_d_dysaz"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_d_dysaz",
+      "containerId": "rect_c_hjmzr",
+      "x": 310,
+      "y": 800,
+      "width": 280,
+      "height": 70,
+      "text": "📚  Knowledge Base\nCompany IT how-to articles",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_e_e5vz0",
+      "x": 780,
+      "y": 780,
+      "width": 300,
+      "height": 90,
+      "strokeColor": "#F7630C",
+      "backgroundColor": "#FFF4CE",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_f_kpiv9"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_f_kpiv9",
+      "containerId": "rect_e_e5vz0",
+      "x": 790,
+      "y": 790,
+      "width": 280,
+      "height": 70,
+      "text": "✋  Human Approval\nA person confirms every ticket change",
+      "fontSize": 17,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_g_f7oj2",
+      "x": 780,
+      "y": 940,
+      "width": 300,
+      "height": 90,
+      "strokeColor": "#0c8599",
+      "backgroundColor": "#C5F6FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_h_0rgc4"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_h_0rgc4",
+      "containerId": "rect_g_f7oj2",
+      "x": 790,
+      "y": 950,
+      "width": 280,
+      "height": 70,
+      "text": "🛠️  ITSM\nSystem of record for tickets",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_i_ydip1",
+      "x": 300,
+      "y": 1080,
+      "width": 780,
+      "height": 70,
+      "strokeColor": "#0078D4",
+      "backgroundColor": "#CFE4FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_j_tsehl"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_j_tsehl",
+      "containerId": "rect_i_ydip1",
+      "x": 310,
+      "y": 1090,
+      "width": 760,
+      "height": 50,
+      "text": "🔒  Powered by Azure AI Foundry — secure, governed, enterprise-ready",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "arrow",
+      "id": "arw_k_i2pjo",
+      "x": 690,
+      "y": 240,
+      "width": 0,
+      "height": 50,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          50
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_2_2z5dl",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_4_rx2xv",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_l_25s86",
+      "x": 690,
+      "y": 370,
+      "width": 0,
+      "height": 50,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          50
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_4_rx2xv",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_6_bu3iz",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_m_ju4v9",
+      "x": 610,
+      "y": 520,
+      "width": -160,
+      "height": 80,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -160,
+          80
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_6_bu3iz",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_8_mpzxp",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_n_dy3wb",
+      "x": 770,
+      "y": 520,
+      "width": 160,
+      "height": 80,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          160,
+          80
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_6_bu3iz",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_a_gwhqn",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_o_cduh8",
+      "x": 450,
+      "y": 710,
+      "width": 0,
+      "height": 80,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          80
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_8_mpzxp",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_c_hjmzr",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_p_ub290",
+      "x": 930,
+      "y": 710,
+      "width": 0,
+      "height": 70,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          70
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_a_gwhqn",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_e_e5vz0",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "arrow",
+      "id": "arw_q_2c50b",
+      "x": 930,
+      "y": 870,
+      "width": 0,
+      "height": 70,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          70
+        ]
+      ],
+      "strokeColor": "#495057",
+      "strokeWidth": 2.5,
+      "roundness": {
+        "type": 2
+      },
+      "endArrowhead": "triangle",
+      "startBinding": {
+        "elementId": "rect_e_e5vz0",
+        "focus": 0,
+        "gap": 6
+      },
+      "endBinding": {
+        "elementId": "rect_g_f7oj2",
+        "focus": 0,
+        "gap": 6
+      }
+    },
+    {
+      "type": "rectangle",
+      "id": "panel_r_5n0cq",
+      "x": 1160,
+      "y": 160,
+      "width": 380,
+      "height": 620,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "lbl_s_9zfsp",
+      "x": 1185,
+      "y": 180,
+      "width": 340,
+      "height": 34,
+      "text": "Business Outcomes",
+      "fontSize": 22,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "left",
+      "verticalAlign": "top"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_t_shxnk",
+      "x": 1185,
+      "y": 240,
+      "width": 330,
+      "height": 100,
+      "strokeColor": "#0078D4",
+      "backgroundColor": "#CFE4FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_u_npglr"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_u_npglr",
+      "containerId": "rect_t_shxnk",
+      "x": 1195,
+      "y": 250,
+      "width": 310,
+      "height": 80,
+      "text": "⚡  Instant answers\nKB-grounded responses with citations",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_v_mnyk9",
+      "x": 1185,
+      "y": 360,
+      "width": 330,
+      "height": 100,
+      "strokeColor": "#107C10",
+      "backgroundColor": "#DFF6DD",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_w_yv9zo"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_w_yv9zo",
+      "containerId": "rect_v_mnyk9",
+      "x": 1195,
+      "y": 370,
+      "width": 310,
+      "height": 80,
+      "text": "📉  Deflects routine tickets\nSelf-service resolves common issues",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_x_xu9ti",
+      "x": 1185,
+      "y": 480,
+      "width": 330,
+      "height": 100,
+      "strokeColor": "#F7630C",
+      "backgroundColor": "#FFF4CE",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_y_n8dwh"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_y_n8dwh",
+      "containerId": "rect_x_xu9ti",
+      "x": 1195,
+      "y": 490,
+      "width": 310,
+      "height": 80,
+      "text": "✋  Safe by design\nHuman approves every change",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    },
+    {
+      "type": "rectangle",
+      "id": "rect_z_j7shd",
+      "x": 1185,
+      "y": 600,
+      "width": 330,
+      "height": 100,
+      "strokeColor": "#0c8599",
+      "backgroundColor": "#C5F6FA",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "roundness": {
+        "type": 3
+      },
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "txt_10_yt7lt"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "txt_10_yt7lt",
+      "containerId": "rect_z_j7shd",
+      "x": 1195,
+      "y": 610,
+      "width": 310,
+      "height": 80,
+      "text": "🔁  24/7 availability\nAlways-on support at scale",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "strokeColor": "#000000",
+      "textAlign": "center",
+      "verticalAlign": "middle"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": null
+  },
+  "files": {}
+}

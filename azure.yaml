@@ -66,9 +66,28 @@ services:
   # are created via the Foundry SDK/control plane, not `azd deploy`.
 
 hooks:
-  # Collect ServiceNow inputs (URL/username/password) before provisioning so
-  # they can flow into Bicep params + Key Vault. Idempotent: skips prompts if
-  # values already set in the azd environment.
+  # `azd up` now runs packaging (the ui prepackage `npm run build`) IN PARALLEL
+  # with provisioning. If the interactive ServiceNow prompt lived only in the
+  # preprovision hook, it would fight the streaming build output for the
+  # terminal. So collect the inputs in `preup`, which runs ONCE at the very
+  # start of `azd up` — before the parallel packaging+provisioning phase — for a
+  # clean prompt. The same script is wired to `preprovision` below as an
+  # idempotent fallback for `azd provision` (run directly, no `up`); it skips
+  # prompting when the values are already set, so there is no double prompt.
+  preup:
+    windows:
+      shell: pwsh
+      run: ./scripts/preprovision.ps1
+      interactive: true
+      continueOnError: false
+    posix:
+      shell: sh
+      run: ./scripts/preprovision.sh
+      interactive: true
+      continueOnError: false
+
+  # Fallback for `azd provision` (when `preup` did not run). Idempotent: skips
+  # prompts if the values are already set in the azd environment.
   preprovision:
     windows:
       shell: pwsh

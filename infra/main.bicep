@@ -53,16 +53,22 @@ param principalId string = ''
 param deployerPrincipalType string = 'User'
 
 // --- ServiceNow inputs (collected by scripts/preprovision) -------------------
-@description('ServiceNow instance base URL (e.g. https://<your-instance>.service-now.com). Required — collected by scripts/preprovision; no default.')
-@minLength(1)
-param serviceNowInstanceUrl string
+// These carry empty-string defaults so azd does NOT prompt for them during
+// parameter resolution (azd only prompts for parameters that have no default).
+// The preprovision hook (scripts/preprovision.*) is the single interactive
+// source and prompts in the intended order: URL -> username -> password. It
+// loops until a non-empty URL is provided, so the @minLength guard is enforced
+// there rather than here (an azd prompt for URL would otherwise sort before,
+// and split from, the hook's own prompts).
+@description('ServiceNow instance base URL (e.g. https://<your-instance>.service-now.com). Collected by scripts/preprovision (hook loops until non-empty).')
+param serviceNowInstanceUrl string = ''
 
-@description('ServiceNow username used for Table API / MCP auth.')
-param serviceNowUsername string
+@description('ServiceNow username used for Table API / MCP auth. Collected by scripts/preprovision.')
+param serviceNowUsername string = ''
 
 @secure()
-@description('ServiceNow password. Stored ONLY in Key Vault; never emitted as an output.')
-param serviceNowPassword string
+@description('ServiceNow password. Collected by scripts/preprovision. Stored ONLY in Key Vault; never emitted as an output.')
+param serviceNowPassword string = ''
 
 // --- Model deployment knobs (Trinity/Tank tune) ------------------------------
 @description('Chat model deployment name used by the agents.')

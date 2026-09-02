@@ -109,7 +109,11 @@ resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-pre
   }
 }
 
-// Chat model deployment (agents reason with this).
+// Chat model deployment (agents reason with this). Serialized AFTER the project
+// create: the project and model deployments are both operations on the same
+// Cognitive Services account, which rejects concurrent operations with HTTP 409
+// (RequestConflict). Chaining project -> deployments -> connections keeps every
+// account-scoped operation strictly sequential.
 resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
   parent: aiFoundry
   name: chatModelDeploymentName
@@ -127,6 +131,9 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-0
     versionUpgradeOption: 'NoAutoUpgrade'
     raiPolicyName: 'Microsoft.DefaultV2'
   }
+  dependsOn: [
+    aiProject
+  ]
 }
 
 // Embedding model deployment (KB indexing). Serialized after the chat deployment
@@ -197,6 +204,11 @@ resource searchConnection 'Microsoft.CognitiveServices/accounts/projects/connect
       Location: location
     }
   }
+  // Run after all model deployments so this account-scoped write does not race
+  // them (same RequestConflict class as the project vs. deployment race).
+  dependsOn: [
+    triageChatDeployment
+  ]
 }
 
 // Application Insights connection backing Foundry tracing/observability. Creating
@@ -223,6 +235,11 @@ resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/co
       ResourceId: applicationInsightsResourceId
     }
   }
+  // Serialize after the search connection so the two connection writes on the
+  // same account do not run concurrently.
+  dependsOn: [
+    searchConnection
+  ]
 }
 
 // Grant the runtime managed identity the roles needed to use the project + models.

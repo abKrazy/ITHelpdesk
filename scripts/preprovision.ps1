@@ -16,7 +16,9 @@ function Get-AzdEnvValue([string]$key) {
 }
 
 function Set-AzdEnvValue([string]$key, [string]$value) {
-  azd env set $key $value | Out-Null
+  # Redirect stderr too: azd prints its "Update available" banner to stderr on
+  # every invocation, which otherwise spams the terminal between prompts.
+  azd env set $key $value 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) {
     Write-Error "azd env set $key failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE
@@ -29,11 +31,13 @@ if (-not (Get-AzdEnvValue 'SERVICENOW_INSTANCE_URL')) {
     if ([string]::IsNullOrWhiteSpace($inst)) { Write-Host "  A ServiceNow instance URL is required." }
   } while ([string]::IsNullOrWhiteSpace($inst))
   Set-AzdEnvValue 'SERVICENOW_INSTANCE_URL' $inst
+  $prompted = $true
 }
 
 if (-not (Get-AzdEnvValue 'SERVICENOW_USERNAME')) {
   $user = Read-Host "ServiceNow username"
   Set-AzdEnvValue 'SERVICENOW_USERNAME' $user
+  $prompted = $true
 }
 
 if (-not (Get-AzdEnvValue 'SERVICENOW_PASSWORD')) {
@@ -42,6 +46,11 @@ if (-not (Get-AzdEnvValue 'SERVICENOW_PASSWORD')) {
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
   Set-AzdEnvValue 'SERVICENOW_PASSWORD' $plain
   $plain = $null
+  $prompted = $true
 }
 
-Write-Host "ServiceNow inputs captured."
+# Only emit output when we actually prompted. On re-runs (values already set)
+# staying silent avoids a lingering line that azd's live progress UI pins to
+# the bottom of the terminal (interactive hooks write outside azd's render
+# region).
+if ($prompted) { Write-Host "ServiceNow inputs captured." }

@@ -26,6 +26,13 @@ from typing import Any
 from ..agents.incident import IncidentAgent, IncidentResult
 from ..agents.prompts import ORCHESTRATOR_INSTRUCTIONS
 from ..agents.triage import TriageAgent, TriageResult
+from ..observability.knowledge_gaps import (
+    KnowledgeGap,
+    REASON_INCIDENT_CREATED,
+    REASON_KB_INSUFFICIENT,
+    REASON_TRIAGE_UNRESOLVED,
+    record_knowledge_gap,
+)
 
 _INC_RE = re.compile(r"\bINC\d{4,}\b", re.IGNORECASE)
 _CREATE_RE = re.compile(
@@ -53,6 +60,7 @@ class OrchestratorResponse:
     triage: TriageResult | None = None
     incident: IncidentResult | None = None
     servicenow_write_proposal: dict[str, Any] | None = None
+    knowledge_gap: KnowledgeGap | None = None
 
 
 class Orchestrator:
@@ -96,13 +104,21 @@ class Orchestrator:
         original_problem = self._prior_ticket_offer_problem(prior_turns)
         if original_problem and self._is_confirmation(text):
             triage = self._triage.run(original_problem)
+            gap = record_knowledge_gap(
+                original_problem,
+                REASON_KB_INSUFFICIENT,
+                had_citations=bool(triage.citations),
+                tool="manage_servicenow_incident",
+            )
             if propose_writes:
                 proposal = self._create_proposal(
                     original_problem,
                     triage.assignment_group,
                     short_description=self._short_desc(original_problem, triage),
                 )
-                return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+                resp = self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+                resp.knowledge_gap = gap
+                return resp
             incident = self._incident.create(
                 original_problem,
                 assignment_group=triage.assignment_group,
@@ -113,6 +129,7 @@ class Orchestrator:
                 route=["triage", "incident"],
                 triage=triage,
                 incident=incident,
+                knowledge_gap=gap,
             )
 
         # 4. Explicit "create incident" -> triage first. If the KB confidently
@@ -126,13 +143,21 @@ class Orchestrator:
                     route=["triage"],
                     triage=triage,
                 )
+            gap = record_knowledge_gap(
+                problem_text,
+                REASON_INCIDENT_CREATED,
+                had_citations=bool(triage.citations),
+                tool="manage_servicenow_incident",
+            )
             if propose_writes:
                 proposal = self._create_proposal(
                     text,
                     triage.assignment_group,
                     short_description=self._short_desc(problem_text, triage),
                 )
-                return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+                resp = self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+                resp.knowledge_gap = gap
+                return resp
             incident = self._incident.create(
                 text,
                 assignment_group=triage.assignment_group,
@@ -144,22 +169,44 @@ class Orchestrator:
                 route=["triage", "incident"],
                 triage=triage,
                 incident=incident,
+                knowledge_gap=gap,
             )
 
         # 5. General request -> triage; escalate only if it couldn't resolve and
         #    the user signalled they want a ticket (§3.1 -> §3.2).
         triage = self._triage.run(text)
-        if triage.resolved or not triage.escalate_requested:
+        if triage.resolved:
             return OrchestratorResponse(
                 reply=triage.answer, route=["triage"], triage=triage
             )
+        if not triage.escalate_requested:
+            gap = record_knowledge_gap(
+                text,
+                REASON_TRIAGE_UNRESOLVED,
+                had_citations=bool(triage.citations),
+                tool="troubleshoot_from_knowledge_base",
+            )
+            return OrchestratorResponse(
+                reply=triage.answer,
+                route=["triage"],
+                triage=triage,
+                knowledge_gap=gap,
+            )
+        gap = record_knowledge_gap(
+            text,
+            REASON_INCIDENT_CREATED,
+            had_citations=bool(triage.citations),
+            tool="manage_servicenow_incident",
+        )
         if propose_writes:
             proposal = self._create_proposal(
                 text,
                 triage.assignment_group,
                 short_description=self._short_desc(text, triage),
             )
-            return self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+            resp = self._proposal_only(proposal, ["triage", "incident"], triage=triage)
+            resp.knowledge_gap = gap
+            return resp
         incident = self._incident.create(
             text,
             assignment_group=triage.assignment_group,
@@ -170,6 +217,7 @@ class Orchestrator:
             route=["triage", "incident"],
             triage=triage,
             incident=incident,
+            knowledge_gap=gap,
         )
 
     # -- helpers ----------------------------------------------------------

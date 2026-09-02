@@ -111,6 +111,15 @@ ORCHESTRATOR_CONTRACT_VERSION = "agui-proposal-mode-v1"
 # never pass those. Set to "" / "default" to omit the override entirely and fall back
 # to the model's default effort.
 REASONING_EFFORT = os.environ.get("ORCHESTRATOR_REASONING_EFFORT", "low").strip()
+KB_GAP_HARVEST_ENABLED = os.environ.get("KB_GAP_HARVEST_ENABLED", "").strip()
+
+
+def _kb_gap_enabled() -> bool:
+    """Whether the knowledge-gap harvester is on (default ON; set KB_GAP_HARVEST_ENABLED=0 to disable)."""
+    raw = KB_GAP_HARVEST_ENABLED
+    if raw == "":
+        return True
+    return raw.lower() in ("1", "true", "yes", "on")
 
 # Cloud role name for App Insights (== OTEL service.name). Honors the injected
 # OTEL_SERVICE_NAME env var; defaults to the orchestrator's own name.
@@ -379,6 +388,39 @@ def _get_tracer():
     return _tracer or None
 
 
+def _record_kb_gap(question: str, reason: str, *, had_citations: bool = False, tool: str | None = None) -> None:
+    """Emit a best-effort ``knowledge_gap`` span to App Insights. Never raises.
+
+    Mirrors helpdesk.observability.knowledge_gaps: same span name + attribute
+    keys so both runtimes land in one Kusto query. Raw question text is attached
+    only when content recording is enabled (privacy).
+    """
+    try:
+        if not _kb_gap_enabled():
+            return
+        q = (question or "").strip()
+        if not q:
+            return
+        tracer = _get_tracer()
+        if tracer is None:
+            return
+        import hashlib
+
+        digest = hashlib.sha256(q.encode("utf-8")).hexdigest()[:16]
+        with tracer.start_as_current_span("knowledge_gap") as span:
+            span.set_attribute("gen_ai.operation.name", "knowledge_gap")
+            span.set_attribute("helpdesk.kb_gap.reason", reason)
+            span.set_attribute("helpdesk.kb_gap.had_citations", bool(had_citations))
+            span.set_attribute("helpdesk.kb_gap.question_length", len(q))
+            span.set_attribute("helpdesk.kb_gap.question_hash", digest)
+            if tool:
+                span.set_attribute("helpdesk.kb_gap.tool", tool)
+            if _content_recording_enabled():
+                span.set_attribute("helpdesk.kb_gap.question", q)
+    except Exception:  # never break a turn on telemetry
+        _LOGGER.debug("knowledge_gap recording skipped", exc_info=True)
+
+
 # --- Sub-agent invocation ------------------------------------------------------
 _oai_client = None
 
@@ -539,6 +581,13 @@ def _messages_to_input(messages: Any) -> list[dict[str, str]]:
         if content:
             items.append({"role": role, "content": content})
     return items
+
+
+def _last_user_content(input_items: list[dict[str, str]]) -> str:
+    for item in reversed(input_items or []):
+        if item.get("role") == "user":
+            return (item.get("content") or "").strip()
+    return ""
 
 
 def _metadata_text_from_message_contents(msg: Any) -> list[str]:
@@ -1156,6 +1205,7 @@ class RelayOrchestrator(BaseAgent):
                 role="assistant",
             )
             if decision.servicenow_write_proposal is not None:
+                proposal = decision.servicenow_write_proposal
                 yield AgentResponseUpdate(
                     contents=[
                         Content.from_function_call(
@@ -1169,15 +1219,27 @@ class RelayOrchestrator(BaseAgent):
                     ],
                     role="assistant",
                 )
+                if (
+                    isinstance(proposal, dict)
+                    and str(proposal.get("operation")).lower() == "create"
+                ):
+                    _record_kb_gap(
+                        _last_user_content(input_items),
+                        "incident_created",
+                        had_citations=bool(_assignment_group_from_history(input_items)),
+                        tool="manage_servicenow_incident",
+                    )
                 return
             # 2) Stream the sub-agent's answer through verbatim as the terminal text.
             #    A trailing _CitationsFrame (KB turns only) is emitted as a dedicated
             #    ``citations`` function_call item — a structured side-channel the UI
             #    reads to render numbered references without us touching the answer.
+            saw_citations = False
             async for item in _astream_prompt_agent(
                 decision.agent_name, decision.sub_agent_input or ""
             ):
                 if isinstance(item, _CitationsFrame):
+                    saw_citations = True
                     yield AgentResponseUpdate(
                         contents=[
                             Content.from_function_call(
@@ -1192,6 +1254,13 @@ class RelayOrchestrator(BaseAgent):
                     yield AgentResponseUpdate(
                         contents=[Content.from_text(item)], role="assistant"
                     )
+            if decision.agent_name == TRIAGE_AGENT_NAME and not saw_citations:
+                _record_kb_gap(
+                    _last_user_content(input_items),
+                    "triage_no_citations",
+                    had_citations=False,
+                    tool="troubleshoot_from_knowledge_base",
+                )
         else:
             text = decision.direct_text or _NO_ROUTE_FALLBACK
             yield AgentResponseUpdate(

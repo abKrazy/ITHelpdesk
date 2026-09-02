@@ -69,6 +69,71 @@ exercise capabilities 2–4; capability 1 is any KB-answerable "how do I…" que
 | 3 | **Check ticket status** | *"lookup details for incident INC0000057"* | Incident agent fetches state, urgency, and assignment group. |
 | 4 | **Update ticket** | *"update urgency for INC0010027 to low"* | The UI shows a human-approval card; on approval the Incident agent resolves the number → `sys_id` and PATCHes urgency to `3` (Low). |
 
+### Knowledge-Gap Harvester
+
+When the triage agent cannot confidently resolve a request from the KB, or the
+user escalates to a ServiceNow incident, the app records the **originating
+question** as a structured knowledge gap. This gives the helpdesk team a backlog
+of real unmet questions to turn into new KB articles.
+
+Knowledge gaps are emitted as an OpenTelemetry span named `knowledge_gap` to the
+same Application Insights instance already used by the Foundry project and App
+Service. There is no extra infrastructure, RBAC, or provisioning step.
+
+| Reason code | Meaning |
+|-------------|---------|
+| `triage_unresolved` | Triage answered but did not confidently resolve the request, and no ticket was created. |
+| `triage_no_citations` | Hosted triage answer carried no KB citations. |
+| `incident_created` | The user escalated to a ServiceNow incident. |
+| `kb_insufficient` | The KB offered steps, but the user confirmed they did not work. |
+
+Configuration:
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `KB_GAP_HARVEST_ENABLED` | On | Set to `0`, `false`, or `no` to disable knowledge-gap recording entirely. |
+| `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED` | Off | When truthy, the raw question is attached as `helpdesk.kb_gap.question`. When off, only `question_length` and a stable `question_hash` are recorded, so no user content leaves the app. |
+
+Recording is best-effort: telemetry failures are swallowed and never block,
+raise, or change a user turn.
+
+Run these queries in **Application Insights → Logs**. The detail query returns
+recent knowledge-gap spans with their reason, tool, citation status, length,
+dedupe hash, and raw question when content recording is enabled:
+
+```kusto
+let lookback = 30d;
+dependencies
+| where timestamp > ago(lookback)
+| where name == "knowledge_gap"
+| extend reason = tostring(customDimensions["helpdesk.kb_gap.reason"]),
+         tool = tostring(customDimensions["helpdesk.kb_gap.tool"]),
+         had_citations = tobool(tostring(customDimensions["helpdesk.kb_gap.had_citations"])),
+         q_len = toint(customDimensions["helpdesk.kb_gap.question_length"]),
+         q_hash = tostring(customDimensions["helpdesk.kb_gap.question_hash"]),
+         question = tostring(customDimensions["helpdesk.kb_gap.question"])
+| project timestamp, reason, tool, had_citations, q_len, q_hash, question
+| order by timestamp desc
+```
+
+Use the rollup query to find the most-repeated unmet questions and prioritize KB
+backlog work:
+
+```kusto
+let lookback = 30d;
+dependencies
+| where timestamp > ago(lookback)
+| where name == "knowledge_gap"
+| extend reason = tostring(customDimensions["helpdesk.kb_gap.reason"]),
+         q_hash = tostring(customDimensions["helpdesk.kb_gap.question_hash"])
+| summarize occurrences = count() by q_hash, reason
+| order by occurrences desc
+```
+
+Depending on the exporter, spans may appear under `traces` or `customEvents`
+instead of `dependencies`; if so, swap the table name and use that table's span
+name column while keeping the same `customDimensions` fields.
+
 ---
 
 ## Prerequisites (read this in full — it prevents 90% of deploy failures)
@@ -500,5 +565,4 @@ assets/                 # KB docs (kb/*.md), ServiceNow OpenAPI spec, sample pro
 ## License
 
 MIT — see `pyproject.toml`.
-
 

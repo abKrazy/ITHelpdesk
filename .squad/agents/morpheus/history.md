@@ -11,3 +11,6 @@
 - 📌 Team update (2026-07-08T11:18:19-05:00): ServiceNow accelerator baseline is built and green: azd/Bicep scaffold, APIM MCP, Python `helpdesk` agents/UI, and top-level `servicenow.build_client` seam validated by pip install, ruff, pytest, and Bicep build. Architecture remains UI-only azd service plus Foundry-hosted Orchestrator/triage/incident agents.
 
 📌 Team update (2025-06-13T00:00:00Z): Morpheus rejected the final UI deploy contract for three coupled blockers, then re-reviewed Switch's lockout revision and cleared the seams to ship after all blockers and stale comments were fixed. — decided by Morpheus
+
+📌 Team update (2026-09-02T18:28:44.954-05:00): Closed-loop KB authoring CLKB-1..9 shipped in commit e4b4995; canonical decisions now capture Easy Auth admin, Blob gap queue, native Search Blob-pull indexing, run-on-publish, RBAC, feature flags, tests, and docs — decided by Morpheus/Trinity/Switch/Tank/Dozer.
+

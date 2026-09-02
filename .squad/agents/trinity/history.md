@@ -15,3 +15,6 @@
 - 📌 Team update (2026-07-08T17:50:46-05:00): Trinity fixed the live Azure AI Search confidence gate with semantic reranker-score gating, resolution_steps on every chunk, and source dedupe; Coordinator verified live deflection-first behavior and ServiceNow creation via INC0010036. — decided by Trinity/Coordinator
 
 📌 Team update (2026-07-08T22:46:07.761-05:00): Triage now uses the real Foundry IQ KB via Search agentic-retrieval MCP RemoteTool connection it-helpdesk-kb-mcp; managed project Index/AISearchIndexResource is explicitly retired. Verified live in swedencentral and committed as 2c8edf9 — decided by Trinity.
+
+📌 Team update (2026-09-02T18:28:44.954-05:00): Closed-loop KB authoring CLKB-1..9 shipped in commit e4b4995; canonical decisions now capture Easy Auth admin, Blob gap queue, native Search Blob-pull indexing, run-on-publish, RBAC, feature flags, tests, and docs — decided by Morpheus/Trinity/Switch/Tank/Dozer.
+

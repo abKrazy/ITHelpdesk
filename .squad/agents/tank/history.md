@@ -12,3 +12,6 @@
 - 📌 Team update (2026-07-08T17:19:03-05:00): App Service now receives `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, and `AZURE_OPENAI_CHAT_DEPLOYMENT` from Bicep/live settings, unblocking KB-grounded triage in the deployed app. Final live validation passed. — decided by Tank/Coordinator
 
 📌 Team update (2026-07-08T22:46:07.761-05:00): Foundry IQ KB grounding added infra/modules/kb-connection.bicep and depends on project managed identity Search Index Data Reader RBAC in search-rbac.bicep; keep infra/RBAC paths aligned for future provisioning changes — decided by Trinity.
+
+📌 Team update (2026-09-02T18:28:44.954-05:00): Closed-loop KB authoring CLKB-1..9 shipped in commit e4b4995; canonical decisions now capture Easy Auth admin, Blob gap queue, native Search Blob-pull indexing, run-on-publish, RBAC, feature flags, tests, and docs — decided by Morpheus/Trinity/Switch/Tank/Dozer.
+

@@ -12,3 +12,6 @@
 
 📌 Team update (2025-06-13T00:00:00Z): Under Reviewer lockout, Switch owned the atomic UI deploy contract revision after Morpheus's rejection and fixed the deploy root, App Service start command, deploy-root requirements, and stale layout comments; validation was green and Morpheus cleared the re-review. — decided by coordinator/Morpheus
 - 📌 Team update (2026-07-08T17:19:03-05:00): Live APIM MCP path is stable: `apis/tools` deploy serially with `@batchSize(1)`, all six tools are restored, and the ServiceNow client recognizes APIM `TableRecord` write-body schemas for create/update. Final live validation passed for lookup, triage/create, update, and round-trip persistence. — decided by Switch/Coordinator
+
+📌 Team update (2026-09-02T18:28:44.954-05:00): Closed-loop KB authoring CLKB-1..9 shipped in commit e4b4995; canonical decisions now capture Easy Auth admin, Blob gap queue, native Search Blob-pull indexing, run-on-publish, RBAC, feature flags, tests, and docs — decided by Morpheus/Trinity/Switch/Tank/Dozer.
+

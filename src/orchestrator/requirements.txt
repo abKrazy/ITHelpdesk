@@ -1,11 +1,13 @@
 # Runtime dependencies for the IT Helpdesk Orchestrator Foundry Hosted Agent.
 #
-# Microsoft Agent Framework is GA (1.x). The Foundry *hosting* adapter is still
-# Preview, so it is published only as a pre-release; the EXACT pinned version
-# below lets `pip install -r requirements.txt` resolve it without needing `--pre`.
-agent-framework==1.10.0
-agent-framework-foundry==1.10.0
-agent-framework-foundry-hosting==1.0.0a260630
+# Microsoft Agent Framework is GA (1.x), but this hosted container only imports
+# core symbols from `agent_framework`; depending on `agent-framework-core` avoids
+# the meta package's drifting optional subpackage graph. The Foundry *hosting*
+# adapter is still Preview, so it is published only as a pre-release; the EXACT
+# pinned version below lets `pip install -r requirements.txt` resolve it without
+# needing `--pre`.
+agent-framework-core==1.15.0
+agent-framework-foundry-hosting==1.0.0b260821
 azure-ai-projects==2.3.0
 azure-identity>=1.19.0
 # Observability: exports the orchestrator's OpenTelemetry traces (agent runs,

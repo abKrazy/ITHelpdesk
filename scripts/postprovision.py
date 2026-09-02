@@ -107,19 +107,15 @@ def upload_kb_docs() -> None:
             last_exc = exc
             break
 
-    # The archival blob copy is NOT on the RAG path: build_search_index() reads
-    # assets/kb locally and pushes chunks straight to AI Search, so triage grounding
-    # stays intact even when this upload is skipped. Warn and continue so `azd up`
-    # still completes.
-    print(
-        f"[postprovision] WARNING: KB blob upload skipped ({type(last_exc).__name__}: {last_exc}). "
-        "This is archival-only and does NOT affect AI Search grounding "
-        "(see build_search_index). Most common cause: the deployer's 'Storage Blob "
-        "Data Contributor' role assignment had not finished propagating (403 "
-        "AuthorizationFailure) — re-running 'azd provision' usually resolves it. Less "
-        "commonly, an Azure Policy disables storage public network access. Continuing.",
-        file=sys.stderr,
-    )
+    raise RuntimeError(
+        f"KB blob upload failed ({type(last_exc).__name__}: {last_exc}). "
+        "Blob Storage is the required source for AI Search indexing and grounding, "
+        "so the KB upload step must succeed before the search index can be built. "
+        "Most common cause: the deployer's 'Storage Blob Data Contributor' role "
+        "assignment had not finished propagating (403 AuthorizationFailure) — "
+        "re-running 'azd provision' usually resolves it. Less commonly, an Azure "
+        "Policy disables storage public network access."
+    ) from last_exc
 
 
 def build_search_index() -> None:
@@ -135,6 +131,10 @@ def build_search_index() -> None:
         index_name=env("AZURE_SEARCH_INDEX_NAME", required=False, default="it-helpdesk-kb"),
         embedding_deployment=env("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
         openai_endpoint=env("AZURE_OPENAI_ENDPOINT", required=False, default=None),
+        # Blob is the required RAG source; treat a missing endpoint as a hard
+        # misconfiguration rather than silently indexing local assets/kb.
+        blob_endpoint=env("AZURE_STORAGE_BLOB_ENDPOINT"),
+        kb_container=env("AZURE_STORAGE_KB_CONTAINER", required=False, default="kbdocs"),
     )
 
 

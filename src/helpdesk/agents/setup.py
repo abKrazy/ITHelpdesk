@@ -18,7 +18,7 @@ import subprocess
 import time
 
 from .embeddings import EMBEDDING_DIMENSIONS
-from .kb import chunk_doc, load_local_kb
+from .kb import KbDoc, chunk_doc, load_local_kb, parse_markdown
 
 def _log(msg: str) -> None:
     print(f"[setup] {msg}")
@@ -109,6 +109,32 @@ def _run_with_auth_retry(fn, *, what: str, endpoint: str):
 # ---------------------------------------------------------------------------
 # STEP 2 — AI Search index
 # ---------------------------------------------------------------------------
+def load_kb_from_blob(*, blob_endpoint: str, container: str) -> list[KbDoc]:
+    """Load ``*.md`` KB articles from an Azure Blob Storage container."""
+    from azure.storage.blob import BlobServiceClient
+
+    from ..shared import get_credential
+
+    service = BlobServiceClient(
+        account_url=blob_endpoint,
+        credential=get_credential(),
+        **DATAPLANE_CLIENT_TIMEOUTS,
+    )
+    container_client = service.get_container_client(container)
+
+    docs: list[KbDoc] = []
+    for blob in container_client.list_blobs():
+        blob_name = getattr(blob, "name", str(blob))
+        if not blob_name.lower().endswith(".md"):
+            continue
+
+        file_name = blob_name.rsplit("/", 1)[-1]
+        doc_id = file_name[: -len(".md")]
+        markdown = container_client.download_blob(blob_name).readall().decode("utf-8")
+        docs.append(parse_markdown(doc_id, blob_name, markdown))
+    return docs
+
+
 def _build_index_definition(
     index_name: str,
     *,
@@ -226,6 +252,8 @@ def build_search_index(
     index_name: str,
     embedding_deployment: str,
     openai_endpoint: str | None = None,
+    blob_endpoint: str | None = None,
+    kb_container: str | None = None,
 ) -> None:
     """Create/refresh the KB search index and upload embedded chunks. Idempotent."""
     from azure.search.documents import SearchClient
@@ -251,7 +279,31 @@ def build_search_index(
     )
     _log(f"index '{index_name}' created/updated on {search_endpoint}")
 
-    docs = load_local_kb()
+    docs: list[KbDoc]
+    if blob_endpoint:
+        container = kb_container or "kbdocs"
+        try:
+            docs = _run_with_auth_retry(
+                lambda: load_kb_from_blob(blob_endpoint=blob_endpoint, container=container),
+                what="KB blob load",
+                endpoint=blob_endpoint,
+            )
+        except Exception as exc:  # noqa: BLE001 - raise actionable deployment guidance
+            raise RuntimeError(
+                f"KB blob container '{container}' is unreadable at {blob_endpoint}; "
+                "the KB upload step must succeed before indexing. Re-run 'azd provision'. "
+                f"Original error: {type(exc).__name__}: {exc}"
+            ) from exc
+        if not docs:
+            raise RuntimeError(
+                f"KB blob container '{container}' is empty at {blob_endpoint}; "
+                "the KB upload step must succeed before indexing. Re-run 'azd provision'."
+            )
+        _log(f"indexing {len(docs)} docs from blob container '{container}'")
+    else:
+        docs = load_local_kb()
+        _log(f"indexing {len(docs)} docs from local assets/kb")
+
     payload: list[dict] = []
     for doc in docs:
         chunks = chunk_doc(doc)

@@ -1,7 +1,9 @@
 """Knowledge-base parsing + chunking.
 
-The 7 KB markdown docs under ``assets/kb`` are the grounding data for triage.
-This module parses them into structured records used for BOTH:
+In deployed environments, KB markdown docs in Blob Storage are the primary
+grounding data for triage. The shipped ``assets/kb`` docs seed the blob
+container and remain the fallback source for local/mock runs and resilient index
+rebuilds. This module parses them into structured records used for BOTH:
   * building the Azure AI Search index (``setup.build_search_index``), and
   * the local mock search client (so triage can be exercised without Azure).
 

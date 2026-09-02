@@ -22,6 +22,9 @@ param kbContainerName string
 @description('Principal ID of the runtime managed identity (Blob Data Contributor).')
 param managedIdentityPrincipalId string
 
+@description('Principal ID of the Azure AI Search service system-assigned managed identity (Blob Data Reader for native indexer pull).')
+param searchServicePrincipalId string = ''
+
 @description('Object ID of the deploying user (optional local-dev data access).')
 param principalId string = ''
 
@@ -35,6 +38,7 @@ param deployerPrincipalType string = 'User'
 
 // Role definition IDs (built-in).
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+var storageBlobDataReaderRoleId = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -78,6 +82,18 @@ resource miBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: managedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Grant the Search service system-assigned managed identity read access so its
+// native Blob data source can pull KB markdown without storage keys or SAS.
+resource searchBlobReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(searchServicePrincipalId)) {
+  name: guid(storageAccount.id, searchServicePrincipalId, storageBlobDataReaderRoleId, 'search')
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataReaderRoleId)
+    principalId: searchServicePrincipalId
     principalType: 'ServicePrincipal'
   }
 }

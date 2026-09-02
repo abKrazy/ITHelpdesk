@@ -9,10 +9,12 @@ otherwise only length and a short hash are emitted.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass, replace
 
 SPAN_NAME = "knowledge_gap"
+_LOGGER = logging.getLogger(__name__)
 
 REASON_TRIAGE_UNRESOLVED = "triage_unresolved"
 REASON_TRIAGE_NO_CITATIONS = "triage_no_citations"
@@ -102,6 +104,7 @@ def record_knowledge_gap(
                 tracer = None
 
         if tracer is None:
+            _persist_gap(gap)
             return gap
 
         with tracer.start_as_current_span(SPAN_NAME) as span:
@@ -115,6 +118,17 @@ def record_knowledge_gap(
             if content_ok:
                 span.set_attribute(_ATTR_QUESTION, stripped_question)
 
-        return replace(gap, recorded=True)
+        recorded_gap = replace(gap, recorded=True)
+        _persist_gap(recorded_gap)
+        return recorded_gap
     except Exception:
         return None
+
+
+def _persist_gap(gap: KnowledgeGap) -> None:
+    try:
+        from .kb_gap_store import upsert_gap
+
+        upsert_gap(gap)
+    except Exception:
+        _LOGGER.warning("knowledge_gap queue persistence skipped", exc_info=True)

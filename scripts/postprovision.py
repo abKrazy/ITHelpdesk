@@ -45,7 +45,8 @@ def upload_kb_docs() -> None:
     """STEP 1 — upload assets/kb/*.md to the KB blob container.
 
     Uses DefaultAzureCredential (AZURE_CLIENT_ID) against AZURE_STORAGE_BLOB_ENDPOINT,
-    container AZURE_STORAGE_KB_CONTAINER. Overwrites existing blobs (idempotent).
+    container AZURE_STORAGE_KB_CONTAINER. Overwrites existing blobs with the
+    metadata the native Search indexer projects into chunk fields.
     """
     docs = sorted(KB_DIR.glob("*.md"))
     if _mock():
@@ -62,6 +63,7 @@ def upload_kb_docs() -> None:
 
     from azure.storage.blob import BlobServiceClient
 
+    from helpdesk.agents.setup import kb_blob_metadata_from_file
     from helpdesk.shared import get_credential
 
     service = BlobServiceClient(
@@ -91,7 +93,10 @@ def upload_kb_docs() -> None:
             container_client = service.get_container_client(container)
             for doc in docs:
                 container_client.upload_blob(
-                    name=doc.name, data=doc.read_bytes(), overwrite=True
+                    name=doc.name,
+                    data=doc.read_bytes(),
+                    overwrite=True,
+                    metadata=kb_blob_metadata_from_file(doc),
                 )
             print(f"[postprovision] uploaded {len(docs)} KB docs to {blob_endpoint}{container}")
             return
@@ -118,10 +123,23 @@ def upload_kb_docs() -> None:
     ) from last_exc
 
 
+def _storage_resource_id() -> str:
+    explicit = os.environ.get("AZURE_STORAGE_RESOURCE_ID")
+    if explicit:
+        return explicit
+    subscription_id = env("AZURE_SUBSCRIPTION_ID")
+    resource_group = env("AZURE_RESOURCE_GROUP")
+    account_name = env("AZURE_STORAGE_ACCOUNT_NAME")
+    return (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.Storage/storageAccounts/{account_name}"
+    )
+
+
 def build_search_index() -> None:
-    """STEP 2 — (re)build the AI Search index over the KB. Idempotent."""
+    """STEP 2 — create/update KB index + native Blob pull-indexing pipeline."""
     if _mock():
-        print("[postprovision] MOCK: would build AI Search index over the KB")
+        print("[postprovision] MOCK: would create KB Search indexer pipeline and run it")
         return
 
     from helpdesk.agents.setup import build_search_index as _build
@@ -135,6 +153,9 @@ def build_search_index() -> None:
         # misconfiguration rather than silently indexing local assets/kb.
         blob_endpoint=env("AZURE_STORAGE_BLOB_ENDPOINT"),
         kb_container=env("AZURE_STORAGE_KB_CONTAINER", required=False, default="kbdocs"),
+        storage_resource_id=_storage_resource_id(),
+        run=True,
+        wait=True,
     )
 
 

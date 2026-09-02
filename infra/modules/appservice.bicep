@@ -57,6 +57,12 @@ param searchEndpoint string
 @description('Azure AI Search index name that holds the grounded KB.')
 param searchIndexName string
 
+@description('Optional Entra app registration client ID for API App Service Easy Auth. When empty, authSettingsV2 is not deployed.')
+param adminAadClientId string = ''
+
+@description('Tenant ID for the Entra app registration used by API App Service Easy Auth.')
+param adminAadTenantId string = ''
+
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: appServicePlanName
   location: location
@@ -155,6 +161,42 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
           value: keyVaultName
         }
       ]
+    }
+  }
+}
+
+resource apiAuthSettings 'Microsoft.Web/sites/config@2023-12-01' = if (!empty(adminAadClientId)) {
+  parent: apiApp
+  name: 'authsettingsV2'
+  properties: {
+    platform: {
+      enabled: true
+      runtimeVersion: '~1'
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'AllowAnonymous'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: adminAadClientId
+          openIdIssuer: '${environment().authentication.loginEndpoint}${adminAadTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            adminAadClientId
+          ]
+        }
+      }
+    }
+    login: {
+      tokenStore: {
+        enabled: true
+      }
+    }
+    httpSettings: {
+      requireHttps: true
     }
   }
 }

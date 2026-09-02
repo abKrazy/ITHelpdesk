@@ -43,6 +43,7 @@ openai>=1.40
 # crashes with "cannot import name 'KnowledgeBase'". See ensure_kb_knowledge_base
 # in src/helpdesk/agents/definitions/triage_agent.py.
 azure-search-documents==11.7.0b2
+azure-storage-blob>=12.19
 
 # --- ServiceNow / APIM MCP client (pyproject [servicenow]) ---
 httpx>=0.27

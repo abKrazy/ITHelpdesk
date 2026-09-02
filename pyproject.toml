@@ -49,6 +49,7 @@ ui = [
   # agent-framework-hyperlight and breaks the App Service Oryx resolve. See src/requirements.txt.
   "agent-framework-core==1.11.0",
   "ag-ui-protocol==0.1.19",
+  "azure-storage-blob>=12.19",
   "fastapi>=0.111",
   "uvicorn[standard]>=0.30",
 ]

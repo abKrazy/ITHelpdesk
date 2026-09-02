@@ -7,6 +7,26 @@
 set -e
 echo "Running postprovision..."
 
+set_admin_aad_redirect_uri() {
+  if [ -z "${ADMIN_AAD_CLIENT_ID:-}" ] || [ -z "${SERVICE_API_URI:-}" ]; then
+    return 0
+  fi
+  REDIRECT_URI="${SERVICE_API_URI%/}/.auth/login/aad/callback"
+  EXISTING_URIS="$(az ad app show --id "$ADMIN_AAD_CLIENT_ID" --query "web.redirectUris" -o tsv 2>/dev/null || true)"
+  if printf '%s\n' "$EXISTING_URIS" | grep -Fx "$REDIRECT_URI" >/dev/null 2>&1; then
+    echo "API Easy Auth redirect URI ensured: $REDIRECT_URI"
+    return 0
+  fi
+  # shellcheck disable=SC2086 # Azure redirect URIs have no spaces; split into argv intentionally.
+  if ! az ad app update --id "$ADMIN_AAD_CLIENT_ID" --web-redirect-uris $EXISTING_URIS "$REDIRECT_URI" >/dev/null 2>&1; then
+    echo "WARNING: Could not update the API Easy Auth redirect URI on the Entra app registration. Add '$REDIRECT_URI' manually to app registration $ADMIN_AAD_CLIENT_ID." >&2
+    return 0
+  fi
+  echo "API Easy Auth redirect URI ensured: $REDIRECT_URI"
+}
+
+set_admin_aad_redirect_uri
+
 # --- Phase 2: build the orchestrator image server-side, then register it -------
 # `az acr build` uploads ./src/orchestrator to ACR and builds it there (no local
 # Docker daemon needed). The Python worker then registers the pushed image as a

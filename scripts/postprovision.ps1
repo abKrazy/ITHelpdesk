@@ -7,6 +7,29 @@
 $ErrorActionPreference = 'Stop'
 Write-Host "Running postprovision..."
 
+function Set-AdminAadRedirectUri {
+  if (-not $env:ADMIN_AAD_CLIENT_ID -or -not $env:SERVICE_API_URI) { return }
+  $redirectUri = "$($env:SERVICE_API_URI.TrimEnd('/'))/.auth/login/aad/callback"
+  $existingUris = @(az ad app show --id $env:ADMIN_AAD_CLIENT_ID --query "web.redirectUris" -o tsv 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Could not read the Entra app registration redirect URIs. Add '$redirectUri' manually to app registration $($env:ADMIN_AAD_CLIENT_ID)."
+    return
+  }
+  if ($existingUris -contains $redirectUri) {
+    Write-Host "API Easy Auth redirect URI ensured: $redirectUri"
+    return
+  }
+  $updatedUris = @($existingUris | Where-Object { $_ }) + $redirectUri
+  az ad app update --id $env:ADMIN_AAD_CLIENT_ID --web-redirect-uris $updatedUris 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Could not update the API Easy Auth redirect URI on the Entra app registration. Add '$redirectUri' manually to app registration $($env:ADMIN_AAD_CLIENT_ID)."
+    return
+  }
+  Write-Host "API Easy Auth redirect URI ensured: $redirectUri"
+}
+
+Set-AdminAadRedirectUri
+
 # --- Phase 2: build the orchestrator image server-side, then register it -------
 # `az acr build` uploads ./src/orchestrator to ACR and builds it there (no local
 # Docker daemon needed — ideal for hackathon laptops). The Python worker then

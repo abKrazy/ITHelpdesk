@@ -16,9 +16,11 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from datetime import timedelta
+from pathlib import Path
 
 from .embeddings import EMBEDDING_DIMENSIONS
-from .kb import KbDoc, chunk_doc, load_local_kb, parse_markdown
+from .kb import KbDoc, parse_markdown
 
 def _log(msg: str) -> None:
     print(f"[setup] {msg}")
@@ -109,6 +111,46 @@ def _run_with_auth_retry(fn, *, what: str, endpoint: str):
 # ---------------------------------------------------------------------------
 # STEP 2 — AI Search index
 # ---------------------------------------------------------------------------
+KB_INDEXER_POLL_INTERVAL_SECONDS = 5
+KB_INDEXER_TIMEOUT_SECONDS = 600
+KB_CHUNK_MAX_CHARS = 1200
+KB_CHUNK_OVERLAP_CHARS = 100
+KB_INDEXER_INTERVAL_MINUTES = 5
+
+
+def _metadata_value(value: str) -> str:
+    """Return an Azure Blob metadata-safe single-line ASCII-ish value."""
+    return " ".join((value or "").replace("\r", "\n").split())
+
+
+def kb_blob_metadata_from_markdown(
+    *,
+    doc_id: str,
+    source: str,
+    markdown: str,
+    authored_source: str | None = None,
+) -> dict[str, str]:
+    """Metadata the native Blob indexer needs to project parent fields to chunks."""
+    doc = parse_markdown(doc_id, source, markdown)
+    metadata = {
+        "doc_id": doc.doc_id,
+        "title": doc.title,
+        "source": authored_source or doc.source,
+        "assignment_group": doc.assignment_group,
+        "keywords": ", ".join(doc.keywords),
+        "resolution_steps": doc.resolution_steps,
+    }
+    return {key: _metadata_value(value) for key, value in metadata.items() if value}
+
+
+def kb_blob_metadata_from_file(path: Path) -> dict[str, str]:
+    return kb_blob_metadata_from_markdown(
+        doc_id=path.stem,
+        source=path.name,
+        markdown=path.read_text(encoding="utf-8"),
+    )
+
+
 def load_kb_from_blob(*, blob_endpoint: str, container: str) -> list[KbDoc]:
     """Load ``*.md`` KB articles from an Azure Blob Storage container."""
     from azure.storage.blob import BlobServiceClient
@@ -130,8 +172,16 @@ def load_kb_from_blob(*, blob_endpoint: str, container: str) -> list[KbDoc]:
 
         file_name = blob_name.rsplit("/", 1)[-1]
         doc_id = file_name[: -len(".md")]
-        markdown = container_client.download_blob(blob_name).readall().decode("utf-8")
-        docs.append(parse_markdown(doc_id, blob_name, markdown))
+        downloader = container_client.download_blob(blob_name)
+        markdown = downloader.readall().decode("utf-8")
+        doc = parse_markdown(doc_id, blob_name, markdown)
+        properties = getattr(downloader, "properties", None)
+        metadata = getattr(properties, "metadata", None) or {}
+        if metadata:
+            doc.title = metadata.get("title") or doc.title
+            doc.source = metadata.get("source") or doc.source
+            doc.assignment_group = metadata.get("assignment_group") or doc.assignment_group
+        docs.append(doc)
     return docs
 
 
@@ -228,6 +278,305 @@ def _build_index_definition(
     )
 
 
+def kb_indexing_resource_names(index_name: str) -> dict[str, str]:
+    safe = index_name.replace("_", "-").lower()
+    return {
+        "data_source": f"{safe}-blob-ds",
+        "skillset": f"{safe}-blob-skillset",
+        "indexer": f"{safe}-blob-indexer",
+    }
+
+
+def _build_blob_data_source(
+    *,
+    name: str,
+    storage_resource_id: str,
+    container: str,
+):
+    from azure.search.documents.indexes.models import (
+        HighWaterMarkChangeDetectionPolicy,
+        NativeBlobSoftDeleteDeletionDetectionPolicy,
+        SearchIndexerDataContainer,
+        SearchIndexerDataSourceConnection,
+        SearchIndexerDataSourceType,
+    )
+
+    return SearchIndexerDataSourceConnection(
+        name=name,
+        type=SearchIndexerDataSourceType.AZURE_BLOB,
+        connection_string=f"ResourceId={storage_resource_id};",
+        container=SearchIndexerDataContainer(name=container),
+        data_change_detection_policy=HighWaterMarkChangeDetectionPolicy(
+            high_water_mark_column_name="metadata_storage_last_modified"
+        ),
+        data_deletion_detection_policy=NativeBlobSoftDeleteDeletionDetectionPolicy(),
+        description="IT Helpdesk KB markdown from Blob Storage using Search managed identity.",
+    )
+
+
+def _build_kb_skillset(
+    *,
+    name: str,
+    index_name: str,
+    openai_endpoint: str,
+    embedding_deployment: str,
+):
+    from azure.search.documents.indexes.models import (
+        AzureOpenAIEmbeddingSkill,
+        IndexProjectionMode,
+        InputFieldMappingEntry,
+        OutputFieldMappingEntry,
+        SearchIndexerIndexProjection,
+        SearchIndexerIndexProjectionSelector,
+        SearchIndexerIndexProjectionsParameters,
+        SearchIndexerSkillset,
+        SplitSkill,
+        SplitSkillUnit,
+        TextSplitMode,
+    )
+
+    split = SplitSkill(
+        name="kb-split",
+        description="Split KB markdown into chunks near the previous app-side section chunks.",
+        context="/document",
+        text_split_mode=TextSplitMode.PAGES,
+        maximum_page_length=KB_CHUNK_MAX_CHARS,
+        page_overlap_length=KB_CHUNK_OVERLAP_CHARS,
+        unit=SplitSkillUnit.CHARACTERS,
+        inputs=[InputFieldMappingEntry(name="text", source="/document/content")],
+        outputs=[OutputFieldMappingEntry(name="textItems", target_name="pages")],
+    )
+    embed = AzureOpenAIEmbeddingSkill(
+        name="kb-embed",
+        description="Embed each KB chunk with the same reduced dimension used by the index.",
+        context="/document/pages/*",
+        resource_url=openai_endpoint,
+        deployment_name=embedding_deployment,
+        model_name="text-embedding-3-large",
+        dimensions=EMBEDDING_DIMENSIONS,
+        auth_identity=None,
+        inputs=[InputFieldMappingEntry(name="text", source="/document/pages/*")],
+        outputs=[OutputFieldMappingEntry(name="embedding", target_name="content_vector")],
+    )
+    projection = SearchIndexerIndexProjection(
+        selectors=[
+            SearchIndexerIndexProjectionSelector(
+                target_index_name=index_name,
+                parent_key_field_name="doc_id",
+                source_context="/document/pages/*",
+                mappings=[
+                    InputFieldMappingEntry(name="content", source="/document/pages/*"),
+                    InputFieldMappingEntry(
+                        name="content_vector", source="/document/pages/*/content_vector"
+                    ),
+                    InputFieldMappingEntry(name="title", source="/document/metadata_title"),
+                    InputFieldMappingEntry(name="source", source="/document/metadata_source"),
+                    InputFieldMappingEntry(
+                        name="assignment_group",
+                        source="/document/metadata_assignment_group",
+                    ),
+                    InputFieldMappingEntry(
+                        name="resolution_steps",
+                        source="/document/metadata_resolution_steps",
+                    ),
+                ],
+            )
+        ],
+        parameters=SearchIndexerIndexProjectionsParameters(
+            projection_mode=IndexProjectionMode.SKIP_INDEXING_PARENT_DOCUMENTS
+        ),
+    )
+    return SearchIndexerSkillset(
+        name=name,
+        description="Native Blob pull-indexing skillset for IT Helpdesk KB markdown.",
+        skills=[split, embed],
+        index_projection=projection,
+    )
+
+
+def _build_kb_indexer(
+    *,
+    name: str,
+    data_source_name: str,
+    skillset_name: str,
+    index_name: str,
+):
+    from azure.search.documents.indexes.models import (
+        FieldMapping,
+        IndexingParameters,
+        IndexingParametersConfiguration,
+        IndexingSchedule,
+        SearchIndexer,
+    )
+
+    return SearchIndexer(
+        name=name,
+        data_source_name=data_source_name,
+        target_index_name=index_name,
+        skillset_name=skillset_name,
+        description="Pull KB markdown from Blob, split, embed, and project chunks.",
+        field_mappings=[
+            FieldMapping(source_field_name="metadata_doc_id", target_field_name="doc_id"),
+            FieldMapping(source_field_name="metadata_title", target_field_name="title"),
+            FieldMapping(source_field_name="metadata_source", target_field_name="source"),
+            FieldMapping(
+                source_field_name="metadata_assignment_group",
+                target_field_name="assignment_group",
+            ),
+            FieldMapping(
+                source_field_name="metadata_resolution_steps",
+                target_field_name="resolution_steps",
+            ),
+        ],
+        parameters=IndexingParameters(
+            max_failed_items=0,
+            max_failed_items_per_batch=0,
+            configuration=IndexingParametersConfiguration(
+                parsing_mode="text",
+                indexed_file_name_extensions=".md",
+                data_to_extract="contentAndMetadata",
+            ),
+        ),
+        schedule=IndexingSchedule(interval=timedelta(minutes=KB_INDEXER_INTERVAL_MINUTES)),
+    )
+
+
+def create_kb_indexing_pipeline(
+    *,
+    search_endpoint: str,
+    index_name: str,
+    storage_resource_id: str,
+    openai_endpoint: str,
+    embedding_deployment: str,
+    kb_container: str = "kbdocs",
+) -> dict[str, str]:
+    """Create/update the Blob datasource, Split+Embedding skillset, and indexer."""
+    from azure.search.documents.indexes import SearchIndexerClient
+
+    from ..shared import get_credential
+
+    if not storage_resource_id:
+        raise ValueError("storage_resource_id is required for managed-identity Blob indexing.")
+    if not openai_endpoint:
+        raise ValueError("openai_endpoint is required for the AzureOpenAIEmbeddingSkill.")
+    if not embedding_deployment:
+        raise ValueError("embedding_deployment is required for KB embeddings.")
+
+    names = kb_indexing_resource_names(index_name)
+    client = SearchIndexerClient(
+        endpoint=search_endpoint, credential=get_credential(), **DATAPLANE_CLIENT_TIMEOUTS
+    )
+    data_source = _build_blob_data_source(
+        name=names["data_source"],
+        storage_resource_id=storage_resource_id,
+        container=kb_container,
+    )
+    skillset = _build_kb_skillset(
+        name=names["skillset"],
+        index_name=index_name,
+        openai_endpoint=openai_endpoint,
+        embedding_deployment=embedding_deployment,
+    )
+    indexer = _build_kb_indexer(
+        name=names["indexer"],
+        data_source_name=names["data_source"],
+        skillset_name=names["skillset"],
+        index_name=index_name,
+    )
+
+    _run_with_auth_retry(
+        lambda: client.create_or_update_data_source_connection(data_source),
+        what="AI Search KB blob data source create/update",
+        endpoint=search_endpoint,
+    )
+    _run_with_auth_retry(
+        lambda: client.create_or_update_skillset(skillset),
+        what="AI Search KB skillset create/update",
+        endpoint=search_endpoint,
+    )
+    _run_with_auth_retry(
+        lambda: client.create_or_update_indexer(indexer),
+        what="AI Search KB indexer create/update",
+        endpoint=search_endpoint,
+    )
+    _log(
+        "KB native indexing pipeline ready: "
+        f"dataSource={names['data_source']} skillset={names['skillset']} "
+        f"indexer={names['indexer']}"
+    )
+    return names
+
+
+def _indexer_result_status(result) -> str:
+    status = getattr(result, "status", None)
+    return str(getattr(status, "value", status) or "").lower()
+
+
+def _indexer_error_text(result) -> str:
+    errors = getattr(result, "errors", None) or []
+    warnings = getattr(result, "warnings", None) or []
+    parts = []
+    for item in [*errors, *warnings]:
+        message = getattr(item, "message", None) or str(item)
+        parts.append(message)
+    return "; ".join(parts)
+
+
+def run_indexer(
+    *,
+    search_endpoint: str,
+    indexer_name: str,
+    wait: bool = False,
+    timeout_seconds: int = KB_INDEXER_TIMEOUT_SECONDS,
+) -> object | None:
+    """Run an AI Search indexer and optionally wait for terminal status."""
+    from azure.core.exceptions import HttpResponseError
+    from azure.search.documents.indexes import SearchIndexerClient
+
+    from ..shared import get_credential
+
+    client = SearchIndexerClient(
+        endpoint=search_endpoint, credential=get_credential(), **DATAPLANE_CLIENT_TIMEOUTS
+    )
+    try:
+        _run_with_auth_retry(
+            lambda: client.run_indexer(indexer_name),
+            what=f"AI Search indexer '{indexer_name}' run",
+            endpoint=search_endpoint,
+        )
+    except HttpResponseError as exc:
+        if "already running" not in str(exc).lower():
+            raise
+        _log(f"indexer '{indexer_name}' is already running; polling status")
+
+    if not wait:
+        return None
+
+    deadline = time.monotonic() + timeout_seconds
+    last_status = None
+    while time.monotonic() < deadline:
+        status = _run_with_auth_retry(
+            lambda: client.get_indexer_status(indexer_name),
+            what=f"AI Search indexer '{indexer_name}' status",
+            endpoint=search_endpoint,
+        )
+        last_status = status
+        result = getattr(status, "last_result", None) or getattr(status, "lastResult", None)
+        result_status = _indexer_result_status(result)
+        if result_status in {"success", "transientfailure"}:
+            if result_status == "success":
+                return status
+            raise RuntimeError(
+                f"AI Search indexer '{indexer_name}' failed: "
+                f"{_indexer_error_text(result) or result!r}"
+            )
+        time.sleep(KB_INDEXER_POLL_INTERVAL_SECONDS)
+    raise TimeoutError(
+        f"Timed out waiting {timeout_seconds}s for AI Search indexer '{indexer_name}'. "
+        f"Last status: {last_status!r}"
+    )
+
+
 def _verify_upload_results(results) -> None:
     """Raise if Azure AI Search reports any failed document upload."""
     for result in results or []:
@@ -254,13 +603,14 @@ def build_search_index(
     openai_endpoint: str | None = None,
     blob_endpoint: str | None = None,
     kb_container: str | None = None,
+    storage_resource_id: str | None = None,
+    run: bool = True,
+    wait: bool = True,
 ) -> None:
-    """Create/refresh the KB search index and upload embedded chunks. Idempotent."""
-    from azure.search.documents import SearchClient
+    """Create/refresh the KB index and native Blob pull-indexing pipeline."""
     from azure.search.documents.indexes import SearchIndexClient
 
     from ..shared import get_credential
-    from .embeddings import embed_texts
 
     credential = get_credential()
 
@@ -279,63 +629,26 @@ def build_search_index(
     )
     _log(f"index '{index_name}' created/updated on {search_endpoint}")
 
-    docs: list[KbDoc]
-    if blob_endpoint:
-        container = kb_container or "kbdocs"
-        try:
-            docs = _run_with_auth_retry(
-                lambda: load_kb_from_blob(blob_endpoint=blob_endpoint, container=container),
-                what="KB blob load",
-                endpoint=blob_endpoint,
-            )
-        except Exception as exc:  # noqa: BLE001 - raise actionable deployment guidance
-            raise RuntimeError(
-                f"KB blob container '{container}' is unreadable at {blob_endpoint}; "
-                "the KB upload step must succeed before indexing. Re-run 'azd provision'. "
-                f"Original error: {type(exc).__name__}: {exc}"
-            ) from exc
-        if not docs:
-            raise RuntimeError(
-                f"KB blob container '{container}' is empty at {blob_endpoint}; "
-                "the KB upload step must succeed before indexing. Re-run 'azd provision'."
-            )
-        _log(f"indexing {len(docs)} docs from blob container '{container}'")
-    else:
-        docs = load_local_kb()
-        _log(f"indexing {len(docs)} docs from local assets/kb")
-
-    payload: list[dict] = []
-    for doc in docs:
-        chunks = chunk_doc(doc)
-        vectors = embed_texts(chunks, embedding_deployment, dimensions=EMBEDDING_DIMENSIONS)
-        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            payload.append(
-                {
-                    "id": f"{doc.doc_id}-{i}",
-                    "doc_id": doc.doc_id,
-                    "title": doc.title,
-                    "source": doc.source,
-                    "assignment_group": doc.assignment_group,
-                    "content": chunk,
-                    "resolution_steps": doc.resolution_steps,
-                    "content_vector": vector,
-                }
-            )
-
-    search_client = SearchClient(
-        endpoint=search_endpoint,
+    container = kb_container or "kbdocs"
+    if not blob_endpoint:
+        raise RuntimeError(
+            "AZURE_STORAGE_BLOB_ENDPOINT is required; Blob Storage is the only KB source."
+        )
+    names = create_kb_indexing_pipeline(
+        search_endpoint=search_endpoint,
         index_name=index_name,
-        credential=credential,
-        **DATAPLANE_CLIENT_TIMEOUTS,
+        storage_resource_id=storage_resource_id or "",
+        openai_endpoint=openai_endpoint or "",
+        embedding_deployment=embedding_deployment,
+        kb_container=container,
     )
-    # mergeOrUpload keyed on stable ids => idempotent re-runs.
-    results = _run_with_auth_retry(
-        lambda: search_client.merge_or_upload_documents(documents=payload),
-        what="AI Search document upload",
-        endpoint=search_endpoint,
-    )
-    _verify_upload_results(results)
-    _log(f"uploaded {len(payload)} chunks from {len(docs)} KB docs")
+    if run:
+        run_indexer(
+            search_endpoint=search_endpoint,
+            indexer_name=names["indexer"],
+            wait=wait,
+        )
+        _log(f"indexer '{names['indexer']}' run complete")
 
 
 # ---------------------------------------------------------------------------

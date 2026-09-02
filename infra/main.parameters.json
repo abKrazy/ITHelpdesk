@@ -46,6 +46,12 @@
     },
     "kbContainerName": {
       "value": "${AZURE_STORAGE_KB_CONTAINER=kbdocs}"
+    },
+    "adminAadClientId": {
+      "value": "${ADMIN_AAD_CLIENT_ID=}"
+    },
+    "adminAadTenantId": {
+      "value": "${ADMIN_AAD_TENANT_ID=}"
     }
   }
 }

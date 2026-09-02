@@ -134,6 +134,74 @@ Depending on the exporter, spans may appear under `traces` or `customEvents`
 instead of `dependencies`; if so, swap the table name and use that table's span
 name column while keeping the same `customDimensions` fields.
 
+### Closed-Loop KB Authoring
+
+Closed-loop KB authoring turns those detected gaps into searchable articles
+without adding another database. Gaps are stored in Blob alongside the KB, support
+staff review them in an admin page on the **api** App Service, and publishing an
+article uploads markdown plus Blob metadata into the same `kbdocs` container.
+Azure AI Search now owns KB ingestion with a native Blob pull indexer; the old
+in-code chunk/embed/push path is no longer used.
+
+```mermaid
+flowchart LR
+    Gap[Ungrounded triage question] --> Queue[Blob gap queue<br/>_system/kb-gaps]
+    Queue --> Admin[Support staff /admin review]
+    Admin --> Author[Author KB form]
+    Author --> Blob[authored/*.md<br/>+ metadata in kbdocs]
+    Blob --> Indexer[Azure AI Search native indexer<br/>5-min schedule + run on publish]
+    Indexer --> Search[(it-helpdesk-kb)]
+    Search --> Triage[Triage grounds on new content]
+```
+
+Support staff access the admin surface on the API app, not the public UI app:
+
+```bash
+API_URL=$(azd env get-value SERVICE_API_URI)
+# Sign in through App Service Easy Auth / Entra ID, then open /admin.
+open "$API_URL/.auth/login/aad?post_login_redirect_uri=/admin"
+```
+
+After sign-in, open `https://<api-app>/admin` to list open gaps, choose **Author
+KB**, review the prefilled question, and publish. Publishing:
+
+1. writes `authored/<doc-id>.md` to the `kbdocs` container,
+2. sets Blob metadata required by the native indexer (`doc_id`, `title`,
+   `source`, `assignment_group`, `keywords`, `resolution_steps`, `gap_hash`,
+   `created_at`, `author`),
+3. marks the gap `resolved`, and
+4. calls the Search indexer once for near-immediate grounding. If the run request
+   fails because Search is busy or temporarily unavailable, publish still
+   succeeds and the 5-minute scheduled indexer is the fallback.
+
+Admin sign-in requires an Entra app registration. During `azd up`,
+`scripts/preprovision.*` tries to create or reuse one and sets
+`ADMIN_AAD_CLIENT_ID` / `ADMIN_AAD_TENANT_ID`; `scripts/postprovision.*` then adds
+the API Easy Auth callback URI after `SERVICE_API_URI` exists. If your tenant does
+not allow the deployer to create app registrations, this step fails soft:
+provisioning continues, Easy Auth is skipped, and the hosted admin surface should
+be enabled later with the manual fallback in Prerequisites §2. The only supported
+open-admin mode is local/dev mock mode via `ADMIN_AUTH_DISABLED=1`; do **not** set
+that flag on a shared or production API app.
+
+Closed-loop KB settings:
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `KB_GAP_QUEUE_ENABLED` | On | Writes detected gaps to the Blob-backed admin queue. Set `0`, `false`, `no`, or `off` to keep telemetry spans but skip the queue. |
+| `ADMIN_AUTH_DISABLED` | Off | Local/dev bypass for `/admin/*`; when off, `/admin/*` requires the Easy Auth `X-MS-CLIENT-PRINCIPAL` header. `/agui` and `/healthz` stay anonymous. |
+| `KB_RUN_INDEXER_ON_PUBLISH_ENABLED` | On | Runs the native Search indexer immediately after publish. Set `0`, `false`, `no`, or `off` to rely only on the 5-minute schedule. |
+
+RBAC created by the templates for native indexing:
+
+- Search service system-assigned managed identity → **Storage Blob Data Reader**
+  on the Storage account so the Blob datasource can read `kbdocs` without shared
+  keys or SAS tokens.
+- Search service managed identity → **Cognitive Services OpenAI User** on the
+  Foundry/Azure OpenAI account so the AzureOpenAI embedding skill can run.
+- Runtime/API managed identity → **Search Service Contributor** so the publish
+  path can call `run_indexer()` after uploading an article.
+
 ---
 
 ## Prerequisites (read this in full — it prevents 90% of deploy failures)
@@ -172,6 +240,28 @@ Therefore the deploying identity needs **one** of:
 > fail on the role assignments in `keyvault.bicep`, `storage.bicep`,
 > `search.bicep`, and `foundry.bicep` with an authorization error.
 
+The admin KB authoring surface uses App Service Easy Auth on the Python **api**
+app. During `azd up`, `scripts/preprovision.*` tries to create or reuse a
+single-tenant Entra app registration named `ithelpdesk-admin-<azd-env-name>` and
+stores its client/tenant IDs as `ADMIN_AAD_CLIENT_ID` / `ADMIN_AAD_TENANT_ID`.
+That automatic step requires permission to create app registrations, such as the
+tenant **Application Developer** role or equivalent Microsoft Graph
+`Application.ReadWrite.All` consent. If your tenant blocks app creation, the
+script fails soft and `azd provision` skips Easy Auth until you set those env vars
+manually.
+
+Manual fallback:
+
+```bash
+# 1. Create a single-tenant Entra app registration in the Azure portal.
+# 2. After infra exists, add this redirect URI to it:
+#    https://<api-app>.azurewebsites.net/.auth/login/aad/callback
+# 3. Tell azd to enable Easy Auth on the next provision:
+azd env set ADMIN_AAD_CLIENT_ID <application-client-id>
+azd env set ADMIN_AAD_TENANT_ID <tenant-id>
+azd provision
+```
+
 **Every resource `azd up` creates** (single resource group `rg-<env>`) and the
 roles it assigns:
 
@@ -181,9 +271,9 @@ roles it assigns:
 | Managed Identity | `Microsoft.ManagedIdentity/userAssignedIdentities` | The principal all other roles are granted to |
 | Log Analytics + App Insights | `Microsoft.OperationalInsights/workspaces`, `Microsoft.Insights/components` | — |
 | Key Vault (+ 2 secrets) | `Microsoft.KeyVault/vaults` (standard) | **Key Vault Secrets User** |
-| Storage (+ `kbdocs` container) | `Microsoft.Storage/storageAccounts` (Standard, Hot) | **Storage Blob Data Contributor** |
-| AI Search | `Microsoft.Search/searchServices` (**basic**) | **Search Index Data Contributor** + **Search Service Contributor** |
-| **Azure AI Foundry** (+ project + 2 model deployments) | `Microsoft.CognitiveServices/accounts` (kind `AIServices`, S0) | **Azure AI Developer** + **Cognitive Services OpenAI User** (granted to the managed identity **and** optionally you) · **Cognitive Services User** (managed identity **only**) |
+| Storage (+ `kbdocs` container) | `Microsoft.Storage/storageAccounts` (Standard, Hot) | Runtime MI: **Storage Blob Data Contributor** · Search service MI: **Storage Blob Data Reader** |
+| AI Search | `Microsoft.Search/searchServices` (**basic**, system-assigned MI) | Runtime MI: **Search Index Data Contributor** + **Search Index Data Reader** + **Search Service Contributor** |
+| **Azure AI Foundry** (+ project + 2 model deployments) | `Microsoft.CognitiveServices/accounts` (kind `AIServices`, S0) | Runtime MI: **Azure AI Developer** + **Cognitive Services User** + **Cognitive Services OpenAI User** · Search service MI: **Cognitive Services OpenAI User** · optionally you: **Azure AI Developer** + **Cognitive Services OpenAI User** |
 | **API Management** | `Microsoft.ApiManagement/service` (**Developer** tier) | — (imports the ServiceNow OpenAPI spec + MCP endpoint) |
 | App Service Plan + Web Apps (API + UI) | `Microsoft.Web/serverfarms` (**Basic B2**) + 2× `Microsoft.Web/sites` | Python `api` exposes `/agui`; Node `ui` serves CopilotKit and calls `AGUI_BACKEND_URL` |
 
@@ -341,8 +431,10 @@ azd up
   - `ui` — Node/Next.js CopilotKit frontend, wired to the API by `AGUI_BACKEND_URL`.
 - `azd deploy` packages and deploys **both services** (`api` then `ui`).
 - The **`postprovision` hook** (`scripts/postprovision.*`) then:
-  1. **uploads the KB docs** (`assets/kb/*.md`) to the Storage `kbdocs` container,
-  2. **builds the Azure AI Search index** (`it-helpdesk-kb`) over them, and
+  1. **uploads the KB docs** (`assets/kb/*.md`) to the Storage `kbdocs` container
+     with the metadata the native Search indexer projects,
+  2. **creates/updates the Azure AI Search index and native Blob pull indexer**
+     (`it-helpdesk-kb`, 5-minute schedule) and runs it once, and
   3. **creates/refreshes the 3 Foundry agents** (orchestrator, triage, incident)
      and writes their IDs back to the azd environment. (Idempotent — safe to re-run.)
 
@@ -461,6 +553,8 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | `azd up` seems stuck for 30–45 min | **APIM Developer tier provisioning is slow (normal)** — a fresh APIM instance takes ~30–45 min to activate | Wait; it's not hung. Subsequent `azd up` runs are much faster. |
 | `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
 | Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
+| Admin sign-in / Easy Auth is not enabled after `azd up` | The deployer could not create an Entra app registration, so `ADMIN_AAD_CLIENT_ID` was left empty and Bicep skipped `authSettingsV2` | Create a single-tenant app registration manually, add redirect URI `https://<api-app>.azurewebsites.net/.auth/login/aad/callback`, then run `azd env set ADMIN_AAD_CLIENT_ID <application-client-id>` and `azd env set ADMIN_AAD_TENANT_ID <tenant-id>` followed by `azd provision`. |
+| Admin sign-in redirects to Entra but returns a redirect URI / reply URL error | The postprovision hook could not update the app registration redirect URI | Add `https://<api-app>.azurewebsites.net/.auth/login/aad/callback` to the app registration's Web redirect URIs manually, then retry sign-in. |
 | ServiceNow calls return **401 `"User Not Authenticated"`** at the incident step | Wrong username/password, user lacks the `itil` role, **or** a **ServiceNow Personal Developer Instance (PDI) rotated its admin password** after hibernating. APIM injects Basic auth correctly — ServiceNow itself is rejecting the credential. | Verify the creds work directly first: `curl -u <user>:<pass> https://<instance>/api/now/table/incident?sysparm_limit=1`. Then update them and re-provision: `azd env set SERVICENOW_INSTANCE_URL …` / `SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, then `azd provision`. Changing the instance URL forces the Key Vault secret + APIM named-value refresh so the gateway picks up the new credential. |
 | postprovision fails with **`... search.windows.net timed out (connect timeout)`** or **`... is unreachable from this machine`** | The postprovision hook runs the AI Search index build **from your machine**, but the Search (or Storage) endpoint is unreachable — almost always because a **governed subscription's Azure Policy disabled public network access** on the data-plane resources. A laptop can't connect. | See **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** below. Fastest fix: run `azd up` from **Azure Cloud Shell** (or an Azure VM in the same tenant), which reaches the endpoints as a trusted Azure service. Alternatively, enable public network access on the Search + Storage resources (or add your client IP to their firewall) and re-run `azd provision`. The build now fails fast (~30s) with this guidance instead of hanging 5 min. |
 | postprovision fails with **KB blob upload `403 AuthorizationFailure`** or **the index build reports an empty/unreadable `kbdocs` container** | The KB is now indexed **from Blob Storage** (not from local `assets/kb`) — this is a hard requirement, there is **no local fallback**. A 403 means either the deployer's **Storage Blob Data Contributor** role hadn't finished propagating, **or** the storage account's `publicNetworkAccess` is **Disabled** by a governed-subscription Azure Policy (see the governed-subscription row above and section below). | Confirm blob line-of-sight: `az storage container list --account-name st<token> --auth-mode login` should list `kbdocs`. If it 403s on network, follow **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** (Cloud Shell, or enable public access / add a policy exemption). If it's RBAC propagation, wait a couple minutes and re-run. To re-run just the data-plane setup without a full provision: `azd hooks run postprovision`. |
@@ -586,4 +680,3 @@ assets/                 # KB docs (kb/*.md), ServiceNow OpenAPI spec, sample pro
 ## License
 
 MIT — see `pyproject.toml`.
-

@@ -95,6 +95,12 @@ param searchIndexName string = 'it-helpdesk-kb'
 @description('Blob container that holds the raw KB markdown docs.')
 param kbContainerName string = 'kbdocs'
 
+@description('Optional Entra app registration client ID for API App Service Easy Auth. When empty, Easy Auth is skipped so deploys without app-registration rights still succeed.')
+param adminAadClientId string = ''
+
+@description('Tenant ID for the Entra app registration used by API App Service Easy Auth. Defaults to the deployment tenant when not set by preprovision.')
+param adminAadTenantId string = ''
+
 // -----------------------------------------------------------------------------
 // NAMING — resource token + convention (locked contract)
 // -----------------------------------------------------------------------------
@@ -110,6 +116,7 @@ var tags = {
 }
 
 var rgName = '${abbrs.resourcesResourceGroups}${environmentName}'
+var effectiveAdminAadTenantId = empty(adminAadTenantId) ? tenant().tenantId : adminAadTenantId
 
 // -----------------------------------------------------------------------------
 // RESOURCE GROUP — the single RG for the whole accelerator
@@ -179,6 +186,7 @@ module storage './modules/storage.bicep' = {
     storageAccountName: '${abbrs.storageStorageAccounts}${resourceToken}'
     kbContainerName: kbContainerName
     managedIdentityPrincipalId: identity.outputs.principalId
+    searchServicePrincipalId: search.outputs.principalId
     principalId: principalId
     deployerPrincipalType: deployerPrincipalType
   }
@@ -301,6 +309,8 @@ module appservice './modules/appservice.bicep' = {
     serviceNowMcpEndpoint: apim.outputs.mcpEndpointUrl
     searchEndpoint: search.outputs.endpoint
     searchIndexName: searchIndexName
+    adminAadClientId: adminAadClientId
+    adminAadTenantId: effectiveAdminAadTenantId
   }
 }
 

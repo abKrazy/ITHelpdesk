@@ -461,9 +461,9 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | `azd up` seems stuck for 30–45 min | **APIM Developer tier provisioning is slow (normal)** — a fresh APIM instance takes ~30–45 min to activate | Wait; it's not hung. Subsequent `azd up` runs are much faster. |
 | `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
 | Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
-| ServiceNow calls return **401/403** | Wrong username/password, or user lacks the `itil` role | Re-run and re-enter creds: `azd env set SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, ensure `itil` role, then `azd provision`. |
+| ServiceNow calls return **401 `"User Not Authenticated"`** at the incident step | Wrong username/password, user lacks the `itil` role, **or** a **ServiceNow Personal Developer Instance (PDI) rotated its admin password** after hibernating. APIM injects Basic auth correctly — ServiceNow itself is rejecting the credential. | Verify the creds work directly first: `curl -u <user>:<pass> https://<instance>/api/now/table/incident?sysparm_limit=1`. Then update them and re-provision: `azd env set SERVICENOW_INSTANCE_URL …` / `SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, then `azd provision`. Changing the instance URL forces the Key Vault secret + APIM named-value refresh so the gateway picks up the new credential. |
 | postprovision fails with **`... search.windows.net timed out (connect timeout)`** or **`... is unreachable from this machine`** | The postprovision hook runs the AI Search index build **from your machine**, but the Search (or Storage) endpoint is unreachable — almost always because a **governed subscription's Azure Policy disabled public network access** on the data-plane resources. A laptop can't connect. | See **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** below. Fastest fix: run `azd up` from **Azure Cloud Shell** (or an Azure VM in the same tenant), which reaches the endpoints as a trusted Azure service. Alternatively, enable public network access on the Search + Storage resources (or add your client IP to their firewall) and re-run `azd provision`. The build now fails fast (~30s) with this guidance instead of hanging 5 min. |
-| postprovision warns **KB blob upload skipped (AuthorizationFailure)** | The deployer's **Storage Blob Data Contributor** role assignment hadn't finished propagating when postprovision ran (data-plane RBAC can take a few minutes), **or** the storage endpoint is network-locked (see the governed-subscription row above). | **Non-fatal** — the KB blob copy is archival-only; triage grounding reads `assets/kb` locally and indexes it straight into AI Search, so it still works. postprovision retries with backoff; if it still skips due to RBAC, re-run `azd provision` once the role has propagated. |
+| postprovision fails with **KB blob upload `403 AuthorizationFailure`** or **the index build reports an empty/unreadable `kbdocs` container** | The KB is now indexed **from Blob Storage** (not from local `assets/kb`) — this is a hard requirement, there is **no local fallback**. A 403 means either the deployer's **Storage Blob Data Contributor** role hadn't finished propagating, **or** the storage account's `publicNetworkAccess` is **Disabled** by a governed-subscription Azure Policy (see the governed-subscription row above and section below). | Confirm blob line-of-sight: `az storage container list --account-name st<token> --auth-mode login` should list `kbdocs`. If it 403s on network, follow **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** (Cloud Shell, or enable public access / add a policy exemption). If it's RBAC propagation, wait a couple minutes and re-run. To re-run just the data-plane setup without a full provision: `azd hooks run postprovision`. |
 | Foundry agent setup fails with **`cannot import name 'KnowledgeBase'`** (or another `Knowledge*`/`SearchIndex*` model) | The local Python running the postprovision hook had a drifted `azure-search-documents` — the Foundry IQ agentic-retrieval preview models live **only** in `11.7.0b2` | The postprovision hook now builds an isolated `.venv-provision/` and installs the exact pins from `scripts/requirements-postprovision.txt` before running — so the deployer's global Python version no longer matters. Just ensure **Python 3.11+** is on `PATH` and re-run `azd provision`. |
 | Lookup of `INC0000057` returns "not found" against your own instance | The example incidents only exist on the reference PDI | Use real incident numbers from your instance, or create one first via the create flow. |
 | UI loads but chat errors | postprovision didn't finish (no index / agents), or the Node UI cannot reach the Python API | Re-run `azd provision` (re-triggers the idempotent postprovision hook), verify `AGUI_BACKEND_URL=https://<api-host>/agui`, and check `azd env get-value SERVICE_API_URI`. |
@@ -493,6 +493,27 @@ You have three options, easiest first:
 2. **Allow your client** on the resources: enable public network access on the AI
    Search service and Storage account (or add your egress IP to their firewalls), then
    re-run `azd provision`. Requires permission to change those network settings.
+
+   > **⚠️ Auto-remediating policy (MCAPS / Azure Landing Zone tenants):** In some
+   > governed tenants the public-access restriction is enforced by a **`modify` policy**
+   > (e.g. `storageaccount_publicnetwork_modify` under a tenant-root assignment such as
+   > `MCAPSGovDeployPolicies`). A `modify` policy **auto-remediates**, so it reports
+   > *Compliant* and your `az storage account update --public-network-access Enabled`
+   > is **reverted within seconds**. To make the change stick you must add a
+   > **policy exemption** scoped to your resource group, then flip public access:
+   > ```bash
+   > az policy exemption create \
+   >   --name helpdesk-storage-pna-waiver \
+   >   --policy-assignment "<assignment-resource-id>" \
+   >   --exemption-category Waiver \
+   >   --scope "/subscriptions/<sub>/resourceGroups/<rg>" \
+   >   --policy-definition-reference-ids storageaccountpublicnetworkmodify \
+   >   --expires-on 2026-12-31T00:00:00Z
+   > az storage account update -g <rg> -n st<token> --public-network-access Enabled
+   > ```
+   > Creating exemptions requires elevated rights (Resource Policy Contributor / Owner
+   > on the scope). For a locked-down tenant where you **can't** create exemptions,
+   > prefer option 1 (Cloud Shell) or option 3 (private endpoints).
 3. **Add private networking** (VNet + private endpoints) and run the setup from inside
    the VNet — the most secure but heaviest option; out of scope for the quick-start.
 

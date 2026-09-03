@@ -18,3 +18,5 @@
 
 📌 Team update (2026-09-02T19:17:37.777-05:00): CLKB feature deployed + live-validated in dryrun4; native Search Blob indexer, Foundry IQ KB, Easy Auth, API/UI deploy, 159 tests, and ruff are green — decided by Trinity/Coordinator.
 
+
+📌 Team update (2026-09-03T06:30:00Z): Tank granted and codified Foundry system-managed identity Blob RBAC for KB gap persistence and contributed the Easy Auth callback fix path with App Service client secret and Entra ID-token issuance support.

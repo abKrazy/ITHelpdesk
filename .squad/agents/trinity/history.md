@@ -21,3 +21,5 @@
 
 📌 Team update (2026-09-02T19:17:37.777-05:00): CLKB feature deployed + live-validated in dryrun4; native Search Blob indexer, Foundry IQ KB, Easy Auth, API/UI deploy, 159 tests, and ruff are green — decided by Trinity/Coordinator.
 
+
+📌 Team update (2026-09-03T06:30:00Z): Trinity added hosted orchestrator Blob-backed KB gap persistence, including `_system/kb-gaps/{question_hash}.json` writes, storage dependency wiring, and hosted-agent storage environment settings. Reported 163 tests passing and ruff clean.

@@ -1,6 +1,26 @@
 # Squad Decisions
 
 ## Active Decisions
+### 2026-09-03T06:30:00Z: Closed-loop KB admin stays on API App Service; single-hostname UI proxy remains optional (consolidated)
+**By:** Coordinator, Morpheus
+**What:** Keep the closed-loop KB admin and authoring surface on the Python API App Service for now. The API app owns gap queue reads/writes, authored KB Blob writes, author metadata, and Search indexer triggering through the managed identity that already has Storage/Search RBAC. If a single visible hostname becomes required later, prefer routing or proxying `/admin/*` from the UI hostname to the API app rather than moving privileged Blob/Search write logic into the public UI app.
+**Why:** This preserves least privilege, avoids duplicating KB write/indexing logic in the Next.js UI app, keeps support admin gated by Easy Auth on the API app, and accepts the separate low-traffic internal admin hostname for the hackathon. Morpheus assessed edge-routing and UI-proxy options; the Coordinator recorded the final user decision to keep the current API-hosted admin surface.
+
+### 2026-09-03T06:30:00Z: API App Service Easy Auth uses a confidential Entra client with ID-token issuance
+**By:** Tank, Coordinator
+**What:** Configure the API App Service Easy Auth AAD provider with `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`, issuer, allowed audience, redirect callback, and Entra app ID-token issuance from postprovision hooks. Keep the secret only in App Service app settings and preserve fail-soft warnings when Graph or ARM operations are unavailable.
+**Why:** The dryrun4 `/admin` callback 401 came from Easy Auth being configured without a client-secret setting and relying on the legacy implicit `id_token` path. A confidential client plus ID-token issuance makes browser sign-in reproducible for fresh `azd` deployments without changing anonymous `/agui` and `/healthz` behavior.
+
+### 2026-09-03T06:30:00Z: Foundry identities have Blob RBAC for closed-loop KB gap persistence
+**By:** Tank
+**What:** Grant the Azure AI Foundry account system-assigned managed identity `Storage Blob Data Contributor` on the KB storage account and codify the assignment in Bicep using the Foundry module `aiFoundryPrincipalId` output. The hosted orchestrator runtime user-assigned identity remains the intended identity path.
+**Why:** Hosted orchestrator gap writes use Blob storage. This belt-and-suspenders RBAC keeps Blob-backed knowledge-gap persistence working if the platform resolves the Foundry account system-assigned identity instead of the runtime user-assigned identity, while avoiding storage keys, connection strings, or secrets.
+
+### 2026-09-03T06:30:00Z: Hosted orchestrator writes KB gaps directly to Blob
+**By:** Trinity
+**What:** The standalone Foundry Hosted Agent orchestrator writes closed-loop knowledge gaps to `_system/kb-gaps/{question_hash}.json` in the KB Blob container after emitting telemetry spans. It uses `azure-storage-blob` and `DefaultAzureCredential`, pins to `AZURE_CLIENT_ID` when present, and writes only when `AZURE_STORAGE_BLOB_ENDPOINT` is configured.
+**Why:** The hosted container cannot import the helpdesk package, but unresolved user questions still need durable backlog capture. Direct Blob persistence with the same `question_hash` as telemetry closes the loop while preserving the hosted container boundary.
+
 ### 2026-09-02: dryrun4 validated end-to-end; governed-sub gotchas documented
 **By:** Coordinator
 **What:** dryrun4 completed full provision and postprovision validation for Foundry, hosted orchestrator dependency pins, Blob-sourced KB indexing, triage grounding with citations, and ServiceNow incident create/status/update. Two environment gotchas were documented: governed-sub Storage public network access policy can block KB Blob upload until an RG-scoped exemption/private-endpoint path exists, and ServiceNow PDI hibernation can rotate credentials so azd env and Key Vault/APIM named values must be refreshed.
@@ -294,84 +314,6 @@ one-click hackathon accelerator, so the working shape is now in bicep so a fresh
 Coordinator: redeploy with `azd provision` (do NOT need full `azd up`), then
 re-verify the app's incident-status path. Live APIM is already left in the
 working state, so the app should work immediately even before re-provision.
-
-### Foundry agents must use the NEW Foundry Agent experience (not classic assistants)
-
-**Author:** Trinity (AI / Agent Engineer)
-**Date:** 2026-07-08T16:08:27-05:00
-**Affects:** `src/helpdesk/agents/setup.py`, `pyproject.toml`, `src/requirements.txt`,
-`scripts/postprovision.py` (caller unchanged), anyone reading the agent-ID env vars.
-
-## WHAT
-
-`create_foundry_agents()` now creates the 3 agents (`it-helpdesk-triage`,
-`it-helpdesk-incident`, `it-helpdesk-orchestrator`) through the **new Azure AI
-Foundry Agent experience**:
-
-```python
-from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import PromptAgentDefinition
-
-with AIProjectClient(endpoint=project_endpoint, credential=get_credential()) as project:
-    version = project.agents.create_version(
-        agent_name=name,
-        definition=PromptAgentDefinition(model=chat_deployment, instructions=instructions),
-    )
-    agent_id = version.name          # stable agent id (== AgentDetails.id)
-```
-
-- The new-experience agent **id == its name** (e.g. `it-helpdesk-triage`); no
-  `asst_` prefix. `create_version` returns `AgentVersionDetails` (`.id="name:1"`,
-  `.name`, `.version`). We persist the stable **name** into
-  `AZURE_AI_{TRIAGE,INCIDENT,ORCHESTRATOR}_AGENT_ID` via the existing
-  `_azd_env_set` helper.
-- Idempotency: agents are **versioned** — re-running publishes a new version of the
-  same named agent instead of duplicating. We `agents.list()` first only to log
-  "already exists" vs "created".
-- Dropped the now-unused `azure-ai-agents==1.2.0b6` pin from `pyproject.toml`
-  (`orchestrator` + `agents` extras) and `src/requirements.txt`. The new path lives
-  entirely in **`azure-ai-projects==2.3.0`** (unchanged pin — it is the current
-  PyPI latest and already exposes `.agents`).
-- Added `tests/test_foundry_agents_setup.py` (fakes the `azure.ai.projects` SDK,
-  offline) asserting the new `create_version` call shape, no `asst_` IDs, azd
-  persistence, and client close. Suite: **52 passed**, ruff clean.
-- Cleanup: the 3 classic `asst_` agents created earlier
-  (`asst_W63u5v61HTtjt10RsFb2qYWw`, `asst_ArzHGA0JLERaDicovU52DV7B`,
-  `asst_rLmNyq7Nn4lRBF7UAeDG0fNi`) were **deleted** via
-  `azure.ai.agents.AgentsClient.delete_agent(id)` during the live probe. Project
-  now holds only new-experience agents.
-
-## WHY
-
-The previous code used `azure.ai.agents.AgentsClient(endpoint).create_agent(...)`,
-which hits the legacy data-plane assistants API (`{endpoint}/assistants`,
-`asst_`-prefixed IDs) = the **classic Foundry experience**. The user explicitly
-required the agents to appear in the **new** Foundry portal experience.
-
-Empirically confirmed against the live project
-`https://aif-4c3eanpernjki.services.ai.azure.com/api/projects/proj-4c3eanpernjki`
-(user credential): a `create_version` agent is listed by `project.agents.list()`
-(new experience) and is a versioned Prompt Agent, whereas classic assistants only
-appeared under `AgentsClient.list_agents()`.
-
-Authoritative sources:
-- azure-ai-projects README (Microsoft Learn, 2.3.0): "Create and run Agents using
-  methods on the `.agents` client property."
-  https://learn.microsoft.com/en-us/python/api/overview/azure/ai-projects-readme?view=azure-python
-- SDK sample `sample_agent_basic.py` — the canonical create call
-  `project_client.agents.create_version(agent_name=..., definition=PromptAgentDefinition(model=..., instructions=...))`.
-  https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/ai/azure-ai-projects/samples/agents/sample_agent_basic.py
-
-## IMPLICATIONS
-
-- The runtime never invokes agents via the agents SDK (orchestrator/triage/incident
-  use their own search + ServiceNow logic); `config.py` reads the agent-ID env vars
-  as opaque strings only. The ID-shape change (`asst_...` → agent name) is therefore
-  safe — nothing parses the prefix.
-- New-experience agents are referenced by **name** (`agent_reference`), so persisting
-  the name is the correct forward-looking identifier if the UI later calls them.
-- `scripts/postprovision.py` signature/caller is unchanged; coordinator runs
-  postprovision live to (re)create all 3 as new-experience agents.
 
 ### Phase 2: Hosted Orchestrator deploy = CONTAINER path (not code-ZIP)
 **By:** Squad (Coordinator) for @abKrazy

@@ -380,3 +380,102 @@ Authoritative sources:
 **Verified SDK shape (2.3.0):** HostedAgentDefinition(kind="hosted", cpu:str, memory:str, environment_variables:dict, container_configuration=ContainerConfiguration(image:str), protocol_versions=[ProtocolVersionRecord(protocol="responses", version=<tbd-live>)]). Enums: AgentEndpointProtocol.RESPONSES="responses"; CodeDependencyResolution in {bundled, remote_build}.
 **Open live item:** exact responses protocol `version` string is a Foundry contract — discover on first live deploy and pin.
 
+### 2026-09-02: CLKB-2 native indexer live fix — keyword key analyzer + parent projection field
+**By:** Trinity
+
+**What:** Fixed the live Azure AI Search index projection failure and proved the native Blob pull-indexing pipeline end-to-end in `ITHelpdesk-Assistant-dryrun4`.
+
+## Fixes
+
+- Changed the index key field `id` from `SimpleField` to `SearchField(..., key=True, searchable=True, filterable=True, analyzer_name=keyword)`.
+- Added additive helper field `parent_id` (`Edm.String`, filterable). Azure AI Search index projections require a non-key parent field; using existing `doc_id` as `parentKeyFieldName` polluted `doc_id` with the encoded blob path, so `parent_id` is required to keep triage's `doc_id` contract intact.
+- `build_search_index()` now recreates the Search index before provisioning the native indexer pipeline. Recreate is deliberate and safe because Blob is the source of truth and postprovision immediately reruns the indexer.
+- Recreate also deletes the Search agentic-retrieval knowledge base/source first when they reference `it-helpdesk-kb`, because Search blocks deleting an index while `it-helpdesk-kb-source` references it. `create_foundry_agents()` / `ensure_kb_knowledge_base()` recreates them by name afterward.
+- Removed indexer `field_mappings` from the projected path. Projection mappings now read custom Blob metadata from the enrichment tree as `/document/doc_id`, `/document/title`, `/document/source`, `/document/assignment_group`, and `/document/resolution_steps`.
+- Kept `content_vector` unchanged: `text-embedding-3-large`, dimensions `1536`.
+
+## Native pipeline after fix
+
+- Data source: `it-helpdesk-kb-blob-ds`
+  - Type: `azureblob`
+  - Auth: Search service system-assigned managed identity via `ResourceId=<storage-account-resource-id>;`
+  - Container: `kbdocs`
+  - Change detection: `metadata_storage_last_modified`
+  - Deletion detection: native Blob soft delete
+- Skillset: `it-helpdesk-kb-blob-skillset`
+  - `SplitSkill`: `/document/content` -> `/document/pages/*`, pages, 1200 characters, 100 overlap
+  - `AzureOpenAIEmbeddingSkill`: `/document/pages/*` -> `/document/pages/*/content_vector`, `text-embedding-3-large`, dimensions `1536`, Search MI auth
+  - Projection target: `it-helpdesk-kb`
+  - Parent key field: `parent_id`
+  - Projection mode: `skipIndexingParentDocuments`
+- Indexer: `it-helpdesk-kb-blob-indexer`
+  - Schedule: every 5 minutes
+  - `parsingMode=text`, `.md` only, `contentAndMetadata`
+
+## Blob metadata -> index fields
+
+| Source path | Index field |
+|---|---|
+| `/document/doc_id` | `doc_id` |
+| `/document/title` | `title` |
+| `/document/source` | `source` |
+| `/document/assignment_group` | `assignment_group` |
+| `/document/resolution_steps` | `resolution_steps` |
+| `/document/pages/*` | `content` |
+| `/document/pages/*/content_vector` | `content_vector` |
+| generated parent key | `parent_id` |
+
+## Live run proof
+
+Environment:
+
+- azd env: `ITHelpdesk-Assistant-dryrun4`
+- Search endpoint: `https://srch-qhe5qssi4mriy.search.windows.net`
+- Index: `it-helpdesk-kb`
+- Storage: `stqhe5qssi4mriy` / `kbdocs`
+
+Result:
+
+- Index recreation was needed:
+  - First defect: existing `id` key lacked `keyword` analyzer.
+  - Second live defect found during proof: schema needed additive `parent_id` to prevent `doc_id` pollution.
+- Recreated index by name, deleted/recreated Foundry IQ `knowledgeBase`/`knowledgeSource` by name, so the KB MCP URL remains:
+  - `https://srch-qhe5qssi4mriy.search.windows.net/knowledgebases/it-helpdesk-kb/mcp?api-version=2026-05-01-preview`
+- Indexer run completed successfully after final fix:
+  - Final status poll: `success`
+  - Errors: `0`
+  - Warnings: `0`
+- Query proof:
+  - Chunk count: `7`
+  - Doc count: `7`
+  - Chunks by doc:
+    - `laptop-performance`: 1
+    - `outlook-email-issues`: 1
+    - `password-reset`: 1
+    - `printer-issues`: 1
+    - `software-installation`: 1
+    - `unable-to-login`: 1
+    - `vpn-connectivity`: 1
+  - Missing required fields: `0`
+  - `content_vector` schema dimensions: `1536`
+
+Sample indexed chunk:
+
+```json
+{
+  "id": "416f9700d114_aHR0cHM6Ly9zdHFoZTVxc3NpNG1yaXkuYmxvYi5jb3JlLndpbmRvd3MubmV0L2tiZG9jcy9wYXNzd29yZC1yZXNldC5tZA2_pages_0",
+  "parent_id": "aHR0cHM6Ly9zdHFoZTVxc3NpNG1yaXkuYmxvYi5jb3JlLndpbmRvd3MubmV0L2tiZG9jcy9wYXNzd29yZC1yZXNldC5tZA2",
+  "doc_id": "password-reset",
+  "title": "Password Reset and Login Assistance",
+  "source": "password-reset.md",
+  "assignment_group": "Service Desk",
+  "resolution_steps": "1. Verify username. 2. Use self-service password reset. 3. Restart affected applications. 4. Reauthenticate and complete MFA."
+}
+```
+
+## Validation
+
+- `HELPDESK_MOCK=1 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider` passed: 159 tests.
+- `.\.venv\Scripts\python.exe -m ruff check .` passed.
+
+**Why:** Azure AI Search index projections enforce a stricter index contract than normal indexing: the key field must use the keyword analyzer and a separate parent key field is required. The additive `parent_id` keeps Foundry IQ and triage source-data fields stable while satisfying native one-to-many projection requirements.

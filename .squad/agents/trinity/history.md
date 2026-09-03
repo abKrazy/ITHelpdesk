@@ -18,3 +18,6 @@
 
 📌 Team update (2026-09-02T18:28:44.954-05:00): Closed-loop KB authoring CLKB-1..9 shipped in commit e4b4995; canonical decisions now capture Easy Auth admin, Blob gap queue, native Search Blob-pull indexing, run-on-publish, RBAC, feature flags, tests, and docs — decided by Morpheus/Trinity/Switch/Tank/Dozer.
 
+
+📌 Team update (2026-09-02T19:17:37.777-05:00): CLKB feature deployed + live-validated in dryrun4; native Search Blob indexer, Foundry IQ KB, Easy Auth, API/UI deploy, 159 tests, and ruff are green — decided by Trinity/Coordinator.
+

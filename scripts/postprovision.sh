@@ -25,7 +25,62 @@ set_admin_aad_redirect_uri() {
   echo "API Easy Auth redirect URI ensured: $REDIRECT_URI"
 }
 
+set_admin_aad_id_token_issuance() {
+  # App Service Easy Auth uses the OIDC hybrid flow (response_type=code id_token),
+  # which requires the app registration to issue ID tokens. Without this, the
+  # /.auth/login/aad/callback returns HTTP 401 after sign-in.
+  if [ -z "${ADMIN_AAD_CLIENT_ID:-}" ]; then
+    return 0
+  fi
+  if ! az ad app update --id "$ADMIN_AAD_CLIENT_ID" --set web.implicitGrantSettings.enableIdTokenIssuance=true >/dev/null 2>&1; then
+    echo "WARNING: Could not enable ID token issuance on app registration $ADMIN_AAD_CLIENT_ID. In the Azure Portal open the app registration > Authentication > Implicit grant and hybrid flows, check 'ID tokens', and save." >&2
+    return 0
+  fi
+  echo "API Easy Auth ID token issuance ensured (hybrid flow)."
+}
+
+set_api_easy_auth_client_secret() {
+  if [ -z "${ADMIN_AAD_CLIENT_ID:-}" ] || [ -z "${AZURE_API_APP_SERVICE_NAME:-}" ] || [ -z "${AZURE_RESOURCE_GROUP:-}" ]; then
+    return 0
+  fi
+
+  TENANT_ID="${ADMIN_AAD_TENANT_ID:-}"
+  if [ -z "$TENANT_ID" ]; then
+    TENANT_ID="$(az account show --query tenantId -o tsv 2>/dev/null || true)"
+  fi
+  if [ -z "$TENANT_ID" ]; then
+    echo "WARNING: Could not read the current Azure tenant. API Easy Auth client-secret wiring skipped." >&2
+    return 0
+  fi
+
+  SECRET_SETTING_NAME="MICROSOFT_PROVIDER_AUTHENTICATION_SECRET"
+  EXISTING_SETTING="$(az webapp config appsettings list --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_API_APP_SERVICE_NAME" --query "[?name=='$SECRET_SETTING_NAME'].name | [0]" -o tsv 2>/dev/null || true)"
+  if [ -z "$EXISTING_SETTING" ]; then
+    CLIENT_SECRET="$(az ad app credential reset --id "$ADMIN_AAD_CLIENT_ID" --append --years 1 --display-name easyauth --query password -o tsv 2>/dev/null || true)"
+    if [ -z "$CLIENT_SECRET" ]; then
+      echo "WARNING: Could not create an Entra app client secret. API Easy Auth client-secret wiring skipped; run az login --tenant <tenant-id> --scope https://graph.microsoft.com/.default if Graph requires reauthentication." >&2
+      return 0
+    fi
+
+    if ! az webapp config appsettings set --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_API_APP_SERVICE_NAME" --settings "$SECRET_SETTING_NAME=$CLIENT_SECRET" -o none >/dev/null 2>&1; then
+      unset CLIENT_SECRET
+      echo "WARNING: Could not store the API Easy Auth client secret in the web app setting '$SECRET_SETTING_NAME'." >&2
+      return 0
+    fi
+    unset CLIENT_SECRET
+  fi
+
+  ISSUER="https://login.microsoftonline.com/$TENANT_ID/v2.0"
+  if ! az webapp auth microsoft update --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_API_APP_SERVICE_NAME" --client-id "$ADMIN_AAD_CLIENT_ID" --client-secret-setting-name "$SECRET_SETTING_NAME" --issuer "$ISSUER" --allowed-token-audiences "$ADMIN_AAD_CLIENT_ID" --yes -o none >/dev/null 2>&1; then
+    echo "WARNING: Could not configure API Easy Auth to use the client-secret app setting '$SECRET_SETTING_NAME'." >&2
+    return 0
+  fi
+  echo "API Easy Auth client-secret setting ensured."
+}
+
 set_admin_aad_redirect_uri
+set_admin_aad_id_token_issuance
+set_api_easy_auth_client_secret
 
 # --- Phase 2: build the orchestrator image server-side, then register it -------
 # `az acr build` uploads ./src/orchestrator to ACR and builds it there (no local

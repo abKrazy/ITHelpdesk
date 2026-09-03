@@ -20,6 +20,7 @@ These tests pin that routing-then-proxy behavior offline:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import sys
@@ -61,6 +62,65 @@ def _drain_stream(agen) -> list:
     return asyncio.run(_collect())
 
 
+class ResourceNotFoundError(Exception):
+    pass
+
+
+class _FakeBlob:
+    def __init__(self) -> None:
+        self.data: bytes | None = None
+        self.uploads: list[dict[str, object]] = []
+
+    def download_blob(self):
+        if self.data is None:
+            raise ResourceNotFoundError()
+        return SimpleNamespace(readall=lambda: self.data)
+
+    def upload_blob(self, data, **kwargs) -> None:
+        self.data = data
+        self.uploads.append({"data": data, **kwargs})
+
+
+class _FakeContainer:
+    def __init__(self) -> None:
+        self.blobs: dict[str, _FakeBlob] = {}
+
+    def get_blob_client(self, name):
+        return self.blobs.setdefault(name, _FakeBlob())
+
+
+class _FakeBlobServiceClient:
+    instances: list["_FakeBlobServiceClient"] = []
+
+    def __init__(self, *, account_url, credential, **kwargs):
+        self.account_url = account_url
+        self.credential = credential
+        self.kwargs = kwargs
+        self.containers: dict[str, _FakeContainer] = {}
+        _FakeBlobServiceClient.instances.append(self)
+
+    def get_container_client(self, name):
+        return self.containers.setdefault(name, _FakeContainer())
+
+
+class _FakeDefaultAzureCredential:
+    instances: list["_FakeDefaultAzureCredential"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _FakeDefaultAzureCredential.instances.append(self)
+
+
+def _install_fake_blob_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    for name in ["azure", "azure.identity", "azure.storage", "azure.storage.blob"]:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+    sys.modules["azure.identity"].DefaultAzureCredential = _FakeDefaultAzureCredential
+    sys.modules["azure.storage.blob"].BlobServiceClient = _FakeBlobServiceClient
+
+
 # --- module surface -----------------------------------------------------------
 def test_module_imports_and_exposes_two_routing_tools(orchestrator_main) -> None:
     tools = orchestrator_main.ROUTING_TOOLS
@@ -95,6 +155,80 @@ def test_build_agent_returns_relay_orchestrator(orchestrator_main) -> None:
     agent = orchestrator_main.build_agent()
     assert isinstance(agent, orchestrator_main.RelayOrchestrator)
     assert agent.name == "it-helpdesk-orchestrator"
+
+
+def test_record_kb_gap_writes_expected_blob_record(orchestrator_main, monkeypatch) -> None:
+    _FakeBlobServiceClient.instances.clear()
+    _FakeDefaultAzureCredential.instances.clear()
+    _install_fake_blob_sdk(monkeypatch)
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT", "https://storage.example.net/")
+    monkeypatch.setenv("AZURE_STORAGE_KB_CONTAINER", "custom-kb")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "uami-client-id")
+    monkeypatch.setattr(orchestrator_main, "KB_GAP_HARVEST_ENABLED", "")
+    monkeypatch.setattr(orchestrator_main, "_get_tracer", lambda: None)
+    monkeypatch.setattr(orchestrator_main, "_kb_gap_credential", None)
+    monkeypatch.setattr(orchestrator_main, "_kb_gap_credential_client_id", None)
+    monkeypatch.setattr(orchestrator_main, "_kb_gap_blob_service_client", None)
+    monkeypatch.setattr(orchestrator_main, "_kb_gap_blob_service_key", None)
+
+    question = "How do I set up dual monitors?"
+    orchestrator_main._record_kb_gap(
+        question,
+        "kb_insufficient",
+        had_citations=False,
+        tool="troubleshoot_from_knowledge_base",
+    )
+
+    question_hash = hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+    client = _FakeBlobServiceClient.instances[0]
+    assert client.account_url == "https://storage.example.net/"
+    assert client.kwargs == {"connection_timeout": 5, "read_timeout": 10}
+    assert _FakeDefaultAzureCredential.instances[0].kwargs == {
+        "managed_identity_client_id": "uami-client-id"
+    }
+
+    blob = client.containers["custom-kb"].blobs[f"_system/kb-gaps/{question_hash}.json"]
+    assert blob.uploads[-1]["overwrite"] is True
+    record = json.loads(blob.data.decode("utf-8"))
+    assert record == {
+        "question_hash": question_hash,
+        "question": question,
+        "status": "new",
+        "reason": "kb_insufficient",
+        "reasons": ["kb_insufficient"],
+        "tool": "troubleshoot_from_knowledge_base",
+        "had_citations": False,
+        "occurrence_count": 1,
+        "first_seen_at": record["first_seen_at"],
+        "last_seen_at": record["last_seen_at"],
+    }
+    assert record["first_seen_at"].endswith("Z")
+    assert record["last_seen_at"].endswith("Z")
+    assert blob.data == json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+    first_seen = record["first_seen_at"]
+    orchestrator_main._record_kb_gap(question, "triage_unresolved", had_citations=True)
+    merged = json.loads(blob.data.decode("utf-8"))
+    assert merged["occurrence_count"] == 2
+    assert merged["first_seen_at"] == first_seen
+    assert merged["reason"] == "triage_unresolved"
+    assert merged["reasons"] == ["kb_insufficient", "triage_unresolved"]
+    assert merged["had_citations"] is True
+
+
+def test_record_kb_gap_skips_blob_write_without_endpoint(
+    orchestrator_main, monkeypatch
+) -> None:
+    monkeypatch.delenv("AZURE_STORAGE_BLOB_ENDPOINT", raising=False)
+    monkeypatch.setattr(orchestrator_main, "KB_GAP_HARVEST_ENABLED", "")
+    monkeypatch.setattr(orchestrator_main, "_get_tracer", lambda: None)
+
+    def _fail_blob_service(endpoint):  # pragma: no cover - must not be called
+        raise AssertionError(f"unexpected Blob write for {endpoint}")
+
+    monkeypatch.setattr(orchestrator_main, "_kb_gap_blob_service", _fail_blob_service)
+
+    orchestrator_main._record_kb_gap("How do I set up dual monitors?", "kb_insufficient")
 
 
 # --- routing instructions -----------------------------------------------------

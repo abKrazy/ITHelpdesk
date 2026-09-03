@@ -993,6 +993,18 @@ def create_hosted_orchestrator(
         "OTEL_SERVICE_NAME": _ORCHESTRATOR_NAME,
         "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED": "true",
     }
+    storage_blob_endpoint = os.environ.get("AZURE_STORAGE_BLOB_ENDPOINT", "").strip()
+    if storage_blob_endpoint:
+        environment_variables["AZURE_STORAGE_BLOB_ENDPOINT"] = storage_blob_endpoint
+
+    kb_container = os.environ.get("AZURE_STORAGE_KB_CONTAINER", "kbdocs").strip()
+    if kb_container:
+        environment_variables["AZURE_STORAGE_KB_CONTAINER"] = kb_container
+
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    if client_id:
+        environment_variables["AZURE_CLIENT_ID"] = client_id
+
     definition = HostedAgentDefinition(
         cpu=cpu,
         memory=memory,

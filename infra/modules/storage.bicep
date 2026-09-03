@@ -22,6 +22,9 @@ param kbContainerName string
 @description('Principal ID of the runtime managed identity (Blob Data Contributor).')
 param managedIdentityPrincipalId string
 
+@description('Principal ID of the Azure AI Foundry account system-assigned managed identity (Blob Data Contributor for hosted-agent fallback auth).')
+param foundryAccountPrincipalId string
+
 @description('Principal ID of the Azure AI Search service system-assigned managed identity (Blob Data Reader for native indexer pull).')
 param searchServicePrincipalId string = ''
 
@@ -82,6 +85,18 @@ resource miBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: managedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Grant the Foundry account system-assigned identity blob data access as a
+// fallback if hosted containers resolve that identity instead of the UAMI.
+resource foundryAccountBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, foundryAccountPrincipalId, storageBlobDataContributorRoleId, 'foundry-account')
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: foundryAccountPrincipalId
     principalType: 'ServicePrincipal'
   }
 }

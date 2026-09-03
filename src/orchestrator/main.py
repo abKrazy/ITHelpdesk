@@ -43,12 +43,14 @@ Deployment contract (see ``scripts/postprovision.py`` -> ``create_hosted_orchest
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 from agent_framework import (
@@ -112,6 +114,13 @@ ORCHESTRATOR_CONTRACT_VERSION = "agui-proposal-mode-v1"
 # to the model's default effort.
 REASONING_EFFORT = os.environ.get("ORCHESTRATOR_REASONING_EFFORT", "low").strip()
 KB_GAP_HARVEST_ENABLED = os.environ.get("KB_GAP_HARVEST_ENABLED", "").strip()
+_KB_GAP_BLOB_PREFIX = "_system/kb-gaps/"
+_KB_GAP_STATUSES = {"new", "triaged", "in_progress", "authored", "resolved", "dismissed"}
+_KB_GAP_CLIENT_TIMEOUTS = {"connection_timeout": 5, "read_timeout": 10}
+_kb_gap_credential = None
+_kb_gap_credential_client_id: str | None = None
+_kb_gap_blob_service_client = None
+_kb_gap_blob_service_key: tuple[str, str | None] | None = None
 
 
 def _kb_gap_enabled() -> bool:
@@ -388,37 +397,196 @@ def _get_tracer():
     return _tracer or None
 
 
-def _record_kb_gap(question: str, reason: str, *, had_citations: bool = False, tool: str | None = None) -> None:
-    """Emit a best-effort ``knowledge_gap`` span to App Insights. Never raises.
+def _record_kb_gap(
+    question: str, reason: str, *, had_citations: bool = False, tool: str | None = None
+) -> None:
+    """Record a best-effort knowledge gap span and Blob queue item. Never raises.
 
     Mirrors helpdesk.observability.knowledge_gaps: same span name + attribute
-    keys so both runtimes land in one Kusto query. Raw question text is attached
-    only when content recording is enabled (privacy).
+    keys so both runtimes land in one Kusto query. The hosted container also
+    writes the durable queue item that the admin UI reads. Raw question text is
+    attached to spans only when content recording is enabled (privacy).
     """
-    try:
-        if not _kb_gap_enabled():
-            return
-        q = (question or "").strip()
-        if not q:
-            return
-        tracer = _get_tracer()
-        if tracer is None:
-            return
-        import hashlib
+    if not _kb_gap_enabled():
+        return
 
-        digest = hashlib.sha256(q.encode("utf-8")).hexdigest()[:16]
-        with tracer.start_as_current_span("knowledge_gap") as span:
-            span.set_attribute("gen_ai.operation.name", "knowledge_gap")
-            span.set_attribute("helpdesk.kb_gap.reason", reason)
-            span.set_attribute("helpdesk.kb_gap.had_citations", bool(had_citations))
-            span.set_attribute("helpdesk.kb_gap.question_length", len(q))
-            span.set_attribute("helpdesk.kb_gap.question_hash", digest)
-            if tool:
-                span.set_attribute("helpdesk.kb_gap.tool", tool)
-            if _content_recording_enabled():
-                span.set_attribute("helpdesk.kb_gap.question", q)
+    q = (question or "").strip()
+    if not q:
+        return
+
+    digest = hashlib.sha256(q.encode("utf-8")).hexdigest()[:16]
+
+    try:
+        tracer = _get_tracer()
+        if tracer is not None:
+            with tracer.start_as_current_span("knowledge_gap") as span:
+                span.set_attribute("gen_ai.operation.name", "knowledge_gap")
+                span.set_attribute("helpdesk.kb_gap.reason", reason)
+                span.set_attribute("helpdesk.kb_gap.had_citations", bool(had_citations))
+                span.set_attribute("helpdesk.kb_gap.question_length", len(q))
+                span.set_attribute("helpdesk.kb_gap.question_hash", digest)
+                if tool:
+                    span.set_attribute("helpdesk.kb_gap.tool", tool)
+                if _content_recording_enabled():
+                    span.set_attribute("helpdesk.kb_gap.question", q)
     except Exception:  # never break a turn on telemetry
         _LOGGER.debug("knowledge_gap recording skipped", exc_info=True)
+
+    try:
+        _persist_kb_gap_to_blob(
+            question=q,
+            question_hash=digest,
+            reason=reason,
+            had_citations=had_citations,
+            tool=tool,
+        )
+    except Exception:  # never break a turn on gap persistence
+        _LOGGER.debug("knowledge_gap Blob persistence skipped", exc_info=True)
+
+
+def _persist_kb_gap_to_blob(
+    *,
+    question: str,
+    question_hash: str,
+    reason: str,
+    had_citations: bool,
+    tool: str | None,
+) -> None:
+    endpoint = os.environ.get("AZURE_STORAGE_BLOB_ENDPOINT", "").strip()
+    if not endpoint:
+        return
+
+    container_name = os.environ.get("AZURE_STORAGE_KB_CONTAINER", "kbdocs").strip() or "kbdocs"
+    blob = (
+        _kb_gap_blob_service(endpoint)
+        .get_container_client(container_name)
+        .get_blob_client(f"{_KB_GAP_BLOB_PREFIX}{question_hash}.json")
+    )
+    incoming = _kb_gap_record(
+        question=question,
+        question_hash=question_hash,
+        reason=reason,
+        had_citations=had_citations,
+        tool=tool,
+    )
+    existing = _download_kb_gap_record(blob)
+    record = _merge_kb_gap_records(existing, incoming) if existing is not None else incoming
+    blob.upload_blob(
+        json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+        overwrite=True,
+    )
+
+
+def _kb_gap_blob_service(endpoint: str):
+    global _kb_gap_blob_service_client, _kb_gap_blob_service_key
+
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip() or None
+    key = (endpoint, client_id)
+    if _kb_gap_blob_service_client is None or _kb_gap_blob_service_key != key:
+        from azure.storage.blob import BlobServiceClient
+
+        _kb_gap_blob_service_client = BlobServiceClient(
+            account_url=endpoint,
+            credential=_kb_gap_default_credential(client_id),
+            **_KB_GAP_CLIENT_TIMEOUTS,
+        )
+        _kb_gap_blob_service_key = key
+    return _kb_gap_blob_service_client
+
+
+def _kb_gap_default_credential(client_id: str | None):
+    global _kb_gap_credential, _kb_gap_credential_client_id
+
+    if _kb_gap_credential is None or _kb_gap_credential_client_id != client_id:
+        from azure.identity import DefaultAzureCredential
+
+        if client_id:
+            _kb_gap_credential = DefaultAzureCredential(managed_identity_client_id=client_id)
+        else:
+            _kb_gap_credential = DefaultAzureCredential()
+        _kb_gap_credential_client_id = client_id
+    return _kb_gap_credential
+
+
+def _kb_gap_record(
+    *,
+    question: str,
+    question_hash: str,
+    reason: str,
+    had_citations: bool,
+    tool: str | None,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    clean_reason = str(reason or "").strip()
+    return {
+        "question_hash": question_hash,
+        "question": question,
+        "status": "new",
+        "reason": clean_reason,
+        "reasons": [clean_reason] if clean_reason else [],
+        "tool": tool,
+        "had_citations": bool(had_citations),
+        "occurrence_count": 1,
+        "first_seen_at": now,
+        "last_seen_at": now,
+    }
+
+
+def _download_kb_gap_record(blob: Any) -> dict[str, Any] | None:
+    try:
+        data = blob.download_blob().readall()
+    except Exception as exc:
+        if exc.__class__.__name__ == "ResourceNotFoundError":
+            return None
+        raise
+
+    record = json.loads(data.decode("utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("Knowledge gap blob does not contain a JSON object")
+    return record
+
+
+def _merge_kb_gap_records(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    status = str(existing.get("status") or "new")
+    if status not in _KB_GAP_STATUSES:
+        status = "new"
+
+    reasons = _dedupe_kb_gap_reasons(
+        [
+            *list(existing.get("reasons") or []),
+            str(existing.get("reason") or ""),
+            *list(incoming.get("reasons") or []),
+            str(incoming.get("reason") or ""),
+        ]
+    )
+    existing_count = int(existing.get("occurrence_count") or 0)
+    first_seen = min(
+        str(existing.get("first_seen_at") or incoming["first_seen_at"]),
+        str(incoming.get("first_seen_at") or existing.get("first_seen_at")),
+    )
+    return {
+        "question_hash": incoming["question_hash"],
+        "question": str(existing.get("question") or incoming.get("question") or ""),
+        "status": status,
+        "reason": incoming.get("reason") or existing.get("reason") or "",
+        "reasons": reasons,
+        "tool": incoming.get("tool") or existing.get("tool"),
+        "had_citations": bool(existing.get("had_citations")) or bool(incoming.get("had_citations")),
+        "occurrence_count": existing_count + 1,
+        "first_seen_at": first_seen,
+        "last_seen_at": incoming["last_seen_at"],
+    }
+
+
+def _dedupe_kb_gap_reasons(reasons: list[Any]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        text = str(reason or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            deduped.append(text)
+    return deduped
 
 
 # --- Sub-agent invocation ------------------------------------------------------

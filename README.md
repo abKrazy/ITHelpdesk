@@ -177,8 +177,11 @@ KB**, review the prefilled question, and publish. Publishing:
 Admin sign-in requires an Entra app registration. During `azd up`,
 `scripts/preprovision.*` tries to create or reuse one and sets
 `ADMIN_AAD_CLIENT_ID` / `ADMIN_AAD_TENANT_ID`; `scripts/postprovision.*` then adds
-the API Easy Auth callback URI after `SERVICE_API_URI` exists. If your tenant does
-not allow the deployer to create app registrations, this step fails soft:
+the API Easy Auth callback URI after `SERVICE_API_URI` exists, creates an app
+client secret when needed, stores it only in the API app setting
+`MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`, and points Easy Auth at that setting
+for the standard authorization-code flow. If your tenant does not allow the
+deployer to create app registrations or credentials, this step fails soft:
 provisioning continues, Easy Auth is skipped, and the hosted admin surface should
 be enabled later with the manual fallback in Prerequisites §2. The only supported
 open-admin mode is local/dev mock mode via `ADMIN_AUTH_DISABLED=1`; do **not** set
@@ -244,11 +247,14 @@ The admin KB authoring surface uses App Service Easy Auth on the Python **api**
 app. During `azd up`, `scripts/preprovision.*` tries to create or reuse a
 single-tenant Entra app registration named `ithelpdesk-admin-<azd-env-name>` and
 stores its client/tenant IDs as `ADMIN_AAD_CLIENT_ID` / `ADMIN_AAD_TENANT_ID`.
-That automatic step requires permission to create app registrations, such as the
-tenant **Application Developer** role or equivalent Microsoft Graph
-`Application.ReadWrite.All` consent. If your tenant blocks app creation, the
-script fails soft and `azd provision` skips Easy Auth until you set those env vars
-manually.
+After the API app exists, `scripts/postprovision.*` registers the Easy Auth
+callback URI, creates an app client secret when needed, stores it only in the API
+app setting `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`, and configures Easy Auth
+to reference that setting. That automatic step requires permission to create app
+registrations and credentials, such as the tenant **Application Developer** role
+or equivalent Microsoft Graph `Application.ReadWrite.All` consent. If your tenant
+blocks app creation or credential updates, the scripts fail soft and `azd
+provision` skips Easy Auth until you set the values and secret manually.
 
 Manual fallback:
 
@@ -256,10 +262,24 @@ Manual fallback:
 # 1. Create a single-tenant Entra app registration in the Azure portal.
 # 2. After infra exists, add this redirect URI to it:
 #    https://<api-app>.azurewebsites.net/.auth/login/aad/callback
-# 3. Tell azd to enable Easy Auth on the next provision:
+# 3. Create a client secret on the app registration, then store it on the API app:
+az webapp config appsettings set \
+  -g <resource-group> \
+  -n <api-app> \
+  --settings MICROSOFT_PROVIDER_AUTHENTICATION_SECRET=<client-secret>
+# 4. Tell azd to enable Easy Auth on the next provision:
 azd env set ADMIN_AAD_CLIENT_ID <application-client-id>
 azd env set ADMIN_AAD_TENANT_ID <tenant-id>
 azd provision
+# 5. If needed, explicitly point Easy Auth at the secret setting:
+az webapp auth microsoft update \
+  -g <resource-group> \
+  -n <api-app> \
+  --client-id <application-client-id> \
+  --client-secret-setting-name MICROSOFT_PROVIDER_AUTHENTICATION_SECRET \
+  --issuer https://login.microsoftonline.com/<tenant-id>/v2.0 \
+  --allowed-token-audiences <application-client-id> \
+  --yes
 ```
 
 **Every resource `azd up` creates** (single resource group `rg-<env>`) and the
@@ -553,7 +573,7 @@ See [`tests/README.md`](./tests/README.md) for the full mock-vs-live testing gui
 | `azd up` seems stuck for 30–45 min | **APIM Developer tier provisioning is slow (normal)** — a fresh APIM instance takes ~30–45 min to activate | Wait; it's not hung. Subsequent `azd up` runs are much faster. |
 | `MissingSubscriptionRegistration` / provider not registered | First-time subscription | `az provider register` the namespaces in Prerequisites §4, then retry. |
 | Model / APIM "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
-| Admin sign-in / Easy Auth is not enabled after `azd up` | The deployer could not create an Entra app registration, so `ADMIN_AAD_CLIENT_ID` was left empty and Bicep skipped `authSettingsV2` | Create a single-tenant app registration manually, add redirect URI `https://<api-app>.azurewebsites.net/.auth/login/aad/callback`, then run `azd env set ADMIN_AAD_CLIENT_ID <application-client-id>` and `azd env set ADMIN_AAD_TENANT_ID <tenant-id>` followed by `azd provision`. |
+| Admin sign-in / Easy Auth is not enabled after `azd up` | The deployer could not create an Entra app registration or client secret, so Easy Auth was skipped or left without `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET` | Create a single-tenant app registration manually, add redirect URI `https://<api-app>.azurewebsites.net/.auth/login/aad/callback`, create a client secret, store it in the API app setting `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`, then run `azd env set ADMIN_AAD_CLIENT_ID <application-client-id>` and `azd env set ADMIN_AAD_TENANT_ID <tenant-id>` followed by `azd provision`. |
 | Admin sign-in redirects to Entra but returns a redirect URI / reply URL error | The postprovision hook could not update the app registration redirect URI | Add `https://<api-app>.azurewebsites.net/.auth/login/aad/callback` to the app registration's Web redirect URIs manually, then retry sign-in. |
 | ServiceNow calls return **401 `"User Not Authenticated"`** at the incident step | Wrong username/password, user lacks the `itil` role, **or** a **ServiceNow Personal Developer Instance (PDI) rotated its admin password** after hibernating. APIM injects Basic auth correctly — ServiceNow itself is rejecting the credential. | Verify the creds work directly first: `curl -u <user>:<pass> https://<instance>/api/now/table/incident?sysparm_limit=1`. Then update them and re-provision: `azd env set SERVICENOW_INSTANCE_URL …` / `SERVICENOW_USERNAME …` / `SERVICENOW_PASSWORD …`, then `azd provision`. Changing the instance URL forces the Key Vault secret + APIM named-value refresh so the gateway picks up the new credential. |
 | postprovision fails with **`... search.windows.net timed out (connect timeout)`** or **`... is unreachable from this machine`** | The postprovision hook runs the AI Search index build **from your machine**, but the Search (or Storage) endpoint is unreachable — almost always because a **governed subscription's Azure Policy disabled public network access** on the data-plane resources. A laptop can't connect. | See **[Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription)** below. Fastest fix: run `azd up` from **Azure Cloud Shell** (or an Azure VM in the same tenant), which reaches the endpoints as a trusted Azure service. Alternatively, enable public network access on the Search + Storage resources (or add your client IP to their firewall) and re-run `azd provision`. The build now fails fast (~30s) with this guidance instead of hanging 5 min. |

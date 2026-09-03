@@ -186,6 +186,7 @@ module storage './modules/storage.bicep' = {
     storageAccountName: '${abbrs.storageStorageAccounts}${resourceToken}'
     kbContainerName: kbContainerName
     managedIdentityPrincipalId: identity.outputs.principalId
+    foundryAccountPrincipalId: foundry.outputs.aiFoundryPrincipalId
     searchServicePrincipalId: search.outputs.principalId
     principalId: principalId
     deployerPrincipalType: deployerPrincipalType
@@ -309,6 +310,9 @@ module appservice './modules/appservice.bicep' = {
     serviceNowMcpEndpoint: apim.outputs.mcpEndpointUrl
     searchEndpoint: search.outputs.endpoint
     searchIndexName: searchIndexName
+    storageBlobEndpoint: storage.outputs.blobEndpoint
+    storageAccountName: storage.outputs.name
+    kbContainerName: kbContainerName
     adminAadClientId: adminAadClientId
     adminAadTenantId: effectiveAdminAadTenantId
   }

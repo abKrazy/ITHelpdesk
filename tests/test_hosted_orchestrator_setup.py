@@ -208,6 +208,57 @@ def test_create_hosted_orchestrator_injects_dedicated_triage_model(
     assert not any(k.startswith(("FOUNDRY_", "AGENT_")) for k in env)
 
 
+def test_create_hosted_orchestrator_injects_storage_queue_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT", "https://storage.example.net/")
+    monkeypatch.setenv("AZURE_STORAGE_KB_CONTAINER", "kbdocs")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "uami-client-id")
+
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-5.4",
+        image="acr/it-helpdesk-orchestrator:latest",
+    )
+
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0][
+        "definition"
+    ].environment_variables
+    assert env["AZURE_STORAGE_BLOB_ENDPOINT"] == "https://storage.example.net/"
+    assert env["AZURE_STORAGE_KB_CONTAINER"] == "kbdocs"
+    assert env["AZURE_CLIENT_ID"] == "uami-client-id"
+    assert not any(k.startswith(("FOUNDRY_", "AGENT_")) for k in env)
+
+
+def test_create_hosted_orchestrator_skips_empty_optional_storage_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProjectClient.instances.clear()
+    _install_fake_projects_sdk(monkeypatch)
+    monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(setup, "_azd_env_set", lambda name, value: None)
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT", "")
+    monkeypatch.setenv("AZURE_STORAGE_KB_CONTAINER", "")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "")
+
+    setup.create_hosted_orchestrator(
+        project_endpoint="https://x/api/projects/p",
+        chat_deployment="gpt-5.4",
+        image="acr/it-helpdesk-orchestrator:latest",
+    )
+
+    env = _FakeProjectClient.instances[-1].agents.create_calls[0][
+        "definition"
+    ].environment_variables
+    assert "AZURE_STORAGE_BLOB_ENDPOINT" not in env
+    assert "AZURE_STORAGE_KB_CONTAINER" not in env
+    assert "AZURE_CLIENT_ID" not in env
+
+
 def test_create_hosted_orchestrator_honours_protocol_version_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

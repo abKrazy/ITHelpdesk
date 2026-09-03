@@ -290,6 +290,7 @@ def test_hosted_inline_recorder_emits_same_span_name_and_attributes(
     monkeypatch.setattr(hosted_orchestrator_main, "KB_GAP_HARVEST_ENABLED", "")
     monkeypatch.setattr(hosted_orchestrator_main, "_get_tracer", lambda: hosted_tracer)
     monkeypatch.setattr(hosted_orchestrator_main, "_content_recording_enabled", lambda: True)
+    monkeypatch.delenv("AZURE_STORAGE_BLOB_ENDPOINT", raising=False)
 
     hosted_orchestrator_main._record_kb_gap(
         question,

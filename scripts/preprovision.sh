@@ -49,7 +49,8 @@ WARNING: Could not create the Entra app registration '$DISPLAY_NAME'. API Easy A
 Manual fallback:
   1. Ask a tenant admin to create a single-tenant app registration named '$DISPLAY_NAME'.
   2. After infra exists, add this redirect URI to the app: https://<api-app>.azurewebsites.net/.auth/login/aad/callback
-  3. Run:
+  3. Create a client secret and store it in the API app setting MICROSOFT_PROVIDER_AUTHENTICATION_SECRET.
+  4. Run:
      azd env set ADMIN_AAD_CLIENT_ID <application-client-id>
      azd env set ADMIN_AAD_TENANT_ID $TENANT_ID
      azd provision

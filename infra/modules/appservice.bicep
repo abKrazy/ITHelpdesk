@@ -57,6 +57,15 @@ param searchEndpoint string
 @description('Azure AI Search index name that holds the grounded KB.')
 param searchIndexName string
 
+@description('Blob service endpoint of the storage account holding KB docs and the gap queue.')
+param storageBlobEndpoint string
+
+@description('Storage account name holding KB docs and the knowledge-gap queue.')
+param storageAccountName string
+
+@description('Blob container name that holds KB documents and the knowledge-gap queue.')
+param kbContainerName string
+
 @description('Optional Entra app registration client ID for API App Service Easy Auth. When empty, authSettingsV2 is not deployed.')
 param adminAadClientId string = ''
 
@@ -153,6 +162,20 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
           value: searchIndexName
         }
         {
+          // Storage endpoint + container the API uses for KB doc uploads and the
+          // durable knowledge-gap queue (admin surface reads/writes here).
+          name: 'AZURE_STORAGE_BLOB_ENDPOINT'
+          value: storageBlobEndpoint
+        }
+        {
+          name: 'AZURE_STORAGE_ACCOUNT_NAME'
+          value: storageAccountName
+        }
+        {
+          name: 'AZURE_STORAGE_KB_CONTAINER'
+          value: kbContainerName
+        }
+        {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: applicationInsightsConnectionString
         }
@@ -181,6 +204,7 @@ resource apiAuthSettings 'Microsoft.Web/sites/config@2023-12-01' = if (!empty(ad
         enabled: true
         registration: {
           clientId: adminAadClientId
+          clientSecretSettingName: 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'
           openIdIssuer: '${environment().authentication.loginEndpoint}${adminAadTenantId}/v2.0'
         }
         validation: {

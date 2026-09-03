@@ -10,6 +10,7 @@ agent-framework-core==1.15.0
 agent-framework-foundry-hosting==1.0.0b260821
 azure-ai-projects==2.3.0
 azure-identity>=1.19.0
+azure-storage-blob>=12.20.0
 # Observability: exports the orchestrator's OpenTelemetry traces (agent runs,
 # model calls, and the two sub-agent tool handoffs) to Application Insights so
 # they surface in the Foundry portal Tracing tab. Configured in main.py via

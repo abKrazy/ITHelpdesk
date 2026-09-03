@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -150,6 +151,7 @@ class HelpdeskAGUIProxyAgent(BaseAgent):
         model = settings.chat_deployment or "gpt-5.4"
         proposal: dict[str, Any] | None = None
         got_text = False
+        saw_citations = False
         seen_handoffs: set[str] = set()
         call_names: dict[str, str] = {}
 
@@ -176,6 +178,7 @@ class HelpdeskAGUIProxyAgent(BaseAgent):
                 if name == CITATIONS_TOOL_NAME:
                     citations = _citations_from_arguments(arguments)
                     if citations:
+                        saw_citations = True
                         yield _citations_tool(citations)
                 elif name == PROPOSAL_TOOL_NAME:
                     proposal = _proposal_from_arguments(arguments)
@@ -198,6 +201,17 @@ class HelpdeskAGUIProxyAgent(BaseAgent):
                 contents=[Content.from_text("(the orchestrator returned no content)")],
                 role="assistant",
             )
+
+        # Closed-loop KB authoring signal. Recording the gap here (api side) is the
+        # authoritative path: this process has storage config + RBAC and emits real
+        # App Service logs, unlike the Foundry hosted container. Best-effort only —
+        # never let gap capture affect the user's stream.
+        await _record_gap_from_turn(
+            messages,
+            proposal=proposal,
+            saw_citations=saw_citations,
+            seen_handoffs=seen_handoffs,
+        )
 
     async def _execute_approved_proposal(self, proposal_json: str) -> str:
         proposal = _loads_proposal(proposal_json)
@@ -420,5 +434,59 @@ def _extract_output_text(resp: Any) -> str:
             if chunk:
                 parts.append(str(chunk))
     return "\n".join(parts).strip() or "(the orchestrator returned no content)"
+
+
+async def _record_gap_from_turn(
+    messages: Any,
+    *,
+    proposal: dict[str, Any] | None,
+    saw_citations: bool,
+    seen_handoffs: set[str],
+) -> None:
+    """Record a knowledge gap when the turn signals the KB could not deflect.
+
+    Two signals mirror the hosted orchestrator's own logic:
+      * triage was invoked but returned no citations -> ``triage_no_citations``
+      * a ServiceNow incident create was proposed -> ``incident_created``
+    """
+
+    reason: str | None = None
+    tool: str | None = None
+    had_citations = False
+    if proposal is not None and str(proposal.get("operation") or "").lower() == "create":
+        reason = "incident_created"
+        tool = INCIDENT_TOOL_NAME
+        had_citations = bool(proposal.get("assignment_group"))
+    elif TRIAGE_TOOL_NAME in seen_handoffs and not saw_citations:
+        reason = "triage_no_citations"
+        tool = TRIAGE_TOOL_NAME
+
+    if reason is None:
+        return
+
+    question = _latest_user_and_history(messages)[0].strip()
+    if not question:
+        return
+
+    await asyncio.to_thread(_upsert_gap_safe, question, reason, tool, had_citations)
+
+
+def _upsert_gap_safe(question: str, reason: str, tool: str | None, had_citations: bool) -> None:
+    try:
+        from ..observability.kb_gap_store import upsert_gap
+
+        digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+        upsert_gap(
+            {
+                "question_hash": digest,
+                "question": question,
+                "reason": reason,
+                "tool": tool,
+                "had_citations": had_citations,
+            }
+        )
+        _LOGGER.info("Recorded KB gap reason=%s hash=%s", reason, digest)
+    except Exception:  # pragma: no cover - defensive best-effort
+        _LOGGER.warning("Failed to record KB gap", exc_info=True)
 
 

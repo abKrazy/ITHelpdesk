@@ -320,3 +320,97 @@ def test_agui_live_proxy_emits_citations_tool_side_channel() -> None:
     ]
     citation_call = next(call for call in function_calls if call.name == "citations")
     assert citation_call.arguments["citations"] == citations
+
+
+def _run_live_proxy_over_events(events, question, monkeypatch):
+    """Drive the live proxy over a fake orchestrator event stream and capture
+    any knowledge gap recorded via ``upsert_gap``."""
+    recorded: list[dict] = []
+
+    kb_gap_store = importlib.import_module("helpdesk.observability.kb_gap_store")
+    monkeypatch.setattr(kb_gap_store, "upsert_gap", lambda gap: recorded.append(dict(gap)))
+
+    class _FakeResponses:
+        def create(self, **_kwargs):
+            return iter(events)
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    proxy = agui_proxy_module.HelpdeskAGUIProxyAgent(
+        settings_factory=lambda: SimpleNamespace(mock_mode=False, chat_deployment="test-model"),
+        mock_orchestrator_factory=lambda: None,
+        openai_client_factory=lambda: _FakeClient(),
+    )
+
+    async def _collect():
+        return [
+            update
+            async for update in proxy.run(
+                messages=[Message("user", [Content.from_text(question)])],
+                stream=True,
+            )
+        ]
+
+    asyncio.run(_collect())
+    return recorded
+
+
+def test_agui_live_proxy_records_gap_when_triage_returns_no_citations(monkeypatch) -> None:
+    """When triage is invoked but emits no citations, the api-side proxy records a
+    durable knowledge gap so it surfaces on the /admin closed-loop authoring page."""
+    import hashlib
+
+    question = "How do I set up dual monitors?"
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="triage-call",
+                name="troubleshoot_from_knowledge_base",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="I couldn't find a KB article for that.",
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+
+    recorded = _run_live_proxy_over_events(events, question, monkeypatch)
+
+    assert len(recorded) == 1
+    gap = recorded[0]
+    assert gap["reason"] == "triage_no_citations"
+    assert gap["tool"] == "troubleshoot_from_knowledge_base"
+    assert gap["had_citations"] is False
+    assert gap["question"] == question
+    assert gap["question_hash"] == hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+
+
+def test_agui_live_proxy_does_not_record_gap_when_citations_present(monkeypatch) -> None:
+    """A triage turn that returns citations is a deflection, not a gap."""
+    citations = [{"index": 1, "sourceId": "laptop-performance"}]
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="triage-call",
+                name="troubleshoot_from_knowledge_base",
+            ),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="Try these steps."),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            name="citations",
+            item_id="citations-call",
+            arguments=json.dumps({"citations": citations}),
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+
+    recorded = _run_live_proxy_over_events(events, "my laptop is slow", monkeypatch)
+
+    assert recorded == []

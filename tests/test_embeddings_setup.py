@@ -47,10 +47,15 @@ def test_search_index_uses_same_dimension_constant(monkeypatch: pytest.MonkeyPat
     _install_fake_search_index_models(monkeypatch)
 
     index = setup._build_index_definition("it-helpdesk-kb")
+    key_field = next(field for field in index.fields if field.name == "id")
+    parent_field = next(field for field in index.fields if field.name == "parent_id")
     vector_field = next(field for field in index.fields if field.name == "content_vector")
     resolution_field = next(field for field in index.fields if field.name == "resolution_steps")
 
     assert setup.EMBEDDING_DIMENSIONS is embeddings.EMBEDDING_DIMENSIONS
+    assert key_field.key is True
+    assert key_field.analyzer_name == "keyword"
+    assert parent_field.filterable is True
     assert vector_field.vector_search_dimensions == embeddings.EMBEDDING_DIMENSIONS
     assert resolution_field.type == "Edm.String"
 
@@ -89,6 +94,7 @@ def _install_fake_search_index_models(monkeypatch: pytest.MonkeyPatch) -> None:
         pass
 
     models.SearchFieldDataType = SearchFieldDataType
+    models.LexicalAnalyzerName = types.SimpleNamespace(KEYWORD="keyword")
     for class_name in [
         "AzureOpenAIVectorizer",
         "AzureOpenAIVectorizerParameters",

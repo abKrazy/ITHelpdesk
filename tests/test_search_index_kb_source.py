@@ -220,6 +220,7 @@ def _stub_search_index_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_search_sdk(monkeypatch)
     monkeypatch.setattr(shared, "get_credential", lambda: SimpleNamespace())
     monkeypatch.setattr(setup, "_build_index_definition", lambda *args, **kwargs: object())
+    monkeypatch.setattr(setup, "_create_or_replace_index", lambda *args, **kwargs: None)
     monkeypatch.setattr(setup, "_run_with_auth_retry", lambda fn, **kwargs: fn())
 
 
@@ -246,13 +247,17 @@ def test_build_search_index_creates_native_pipeline_and_runs_indexer(
     assert pipeline_client.skillset.index_projection.selectors[0].target_index_name == (
         "it-helpdesk-kb"
     )
+    assert pipeline_client.skillset.index_projection.selectors[0].parent_key_field_name == (
+        "parent_id"
+    )
     mappings = {
         mapping.name: mapping.source
         for mapping in pipeline_client.skillset.index_projection.selectors[0].mappings
     }
+    assert mappings["doc_id"] == "/document/doc_id"
     assert mappings["content"] == "/document/pages/*"
     assert mappings["content_vector"] == "/document/pages/*/content_vector"
-    assert mappings["assignment_group"] == "/document/metadata_assignment_group"
+    assert mappings["assignment_group"] == "/document/assignment_group"
     assert pipeline_client.indexer.schedule.interval.total_seconds() == 300
     assert run_client.runs == ["it-helpdesk-kb-blob-indexer"]
 
@@ -291,6 +296,54 @@ def test_create_kb_indexing_pipeline_is_idempotent_and_uses_managed_identity(
     assert client.skillset.skills[1].auth_identity is None
     assert client.indexer.data_source_name == names["data_source"]
     assert client.indexer.skillset_name == names["skillset"]
+
+
+def test_create_or_replace_index_deletes_existing_without_keyword_analyzer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeIndexClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.deleted_kb: list[str] = []
+            self.deleted_ks: list[str] = []
+            self.updated: list[str] = []
+
+        def get_index(self, name: str):
+            return SimpleNamespace(
+                fields=[SimpleNamespace(name="id", key=True, analyzer_name=None)]
+            )
+
+        def delete_index(self, name: str) -> None:
+            self.deleted.append(name)
+
+        def delete_knowledge_base(self, name: str) -> None:
+            self.deleted_kb.append(name)
+
+        def delete_knowledge_source(self, name: str) -> None:
+            self.deleted_ks.append(name)
+
+        def create_or_update_index(self, index):
+            self.updated.append(index.name)
+            return index
+
+    for name in ["azure", "azure.core", "azure.core.exceptions"]:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    sys.modules["azure.core.exceptions"].ResourceNotFoundError = type(
+        "ResourceNotFoundError", (Exception,), {}
+    )
+    monkeypatch.setattr(setup, "_run_with_auth_retry", lambda fn, **kwargs: fn())
+    client = _FakeIndexClient()
+
+    setup._create_or_replace_index(
+        client,
+        SimpleNamespace(name="it-helpdesk-kb"),
+        search_endpoint="https://search.example.net",
+    )
+
+    assert client.deleted == ["it-helpdesk-kb"]
+    assert client.deleted_kb == ["it-helpdesk-kb"]
+    assert client.deleted_ks == ["it-helpdesk-kb-source"]
+    assert client.updated == ["it-helpdesk-kb"]
 
 
 def test_build_search_index_requires_blob_endpoint_and_storage_resource(

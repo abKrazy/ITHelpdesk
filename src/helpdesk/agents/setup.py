@@ -61,6 +61,12 @@ def _is_auth_propagation_error(exc: Exception) -> bool:
     )
 
 
+def _is_conflicting_update_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    text = str(exc).lower()
+    return status in (409, None) and "conflicting update" in text
+
+
 def _network_unreachable_hint(endpoint: str, exc: Exception) -> str:
     return (
         f"Could not reach '{endpoint}' from this machine ({type(exc).__name__}). "
@@ -86,8 +92,13 @@ def _run_with_auth_retry(fn, *, what: str, endpoint: str):
     last: Exception | None = None
     for attempt, delay in enumerate(_AUTH_RETRY_DELAYS, start=1):
         if delay:
+            reason = (
+                "had a conflicting resource update"
+                if last is not None and _is_conflicting_update_error(last)
+                else "not yet authorized"
+            )
             _log(
-                f"{what} not yet authorized; waiting {delay}s for data-plane RBAC to "
+                f"{what} {reason}; waiting {delay}s for data-plane RBAC/update state to "
                 f"propagate (attempt {attempt}/{len(_AUTH_RETRY_DELAYS)})..."
             )
             time.sleep(delay)
@@ -97,7 +108,7 @@ def _run_with_auth_retry(fn, *, what: str, endpoint: str):
             raise RuntimeError(_network_unreachable_hint(endpoint, exc)) from exc
         except Exception as exc:  # noqa: BLE001
             last = exc
-            if _is_auth_propagation_error(exc):
+            if _is_auth_propagation_error(exc) or _is_conflicting_update_error(exc):
                 continue
             raise
     raise RuntimeError(
@@ -195,6 +206,7 @@ def _build_index_definition(
         AzureOpenAIVectorizer,
         AzureOpenAIVectorizerParameters,
         HnswAlgorithmConfiguration,
+        LexicalAnalyzerName,
         SearchableField,
         SearchField,
         SearchFieldDataType,
@@ -209,7 +221,15 @@ def _build_index_definition(
     )
 
     fields = [
-        SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+        SearchField(
+            name="id",
+            type=SearchFieldDataType.String,
+            key=True,
+            searchable=True,
+            filterable=True,
+            analyzer_name=LexicalAnalyzerName.KEYWORD,
+        ),
+        SimpleField(name="parent_id", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="doc_id", type=SearchFieldDataType.String, filterable=True),
         SearchableField(name="title", type=SearchFieldDataType.String),
         SimpleField(name="source", type=SearchFieldDataType.String, filterable=True),
@@ -276,6 +296,111 @@ def _build_index_definition(
         vector_search=vector_search,
         semantic_search=semantic_search,
     )
+
+
+def _analyzer_value(value) -> str:
+    return str(getattr(value, "value", value) or "").lower()
+
+
+def _index_key_uses_keyword_analyzer(index) -> bool:
+    key_field = next((field for field in getattr(index, "fields", []) if field.name == "id"), None)
+    return bool(
+        key_field
+        and getattr(key_field, "key", False)
+        and _analyzer_value(getattr(key_field, "analyzer_name", None)) == "keyword"
+    )
+
+
+def _index_has_projection_parent_field(index) -> bool:
+    parent_field = next(
+        (field for field in getattr(index, "fields", []) if field.name == "parent_id"),
+        None,
+    )
+    return bool(parent_field and getattr(parent_field, "filterable", False))
+
+
+def _create_or_replace_index(index_client, index, *, search_endpoint: str) -> None:
+    """Recreate the index so Blob projection reruns leave no stale parent rows."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    existing = None
+    try:
+        existing = _run_with_auth_retry(
+            lambda: index_client.get_index(index.name),
+            what="AI Search index read",
+            endpoint=search_endpoint,
+        )
+    except ResourceNotFoundError:
+        existing = None
+
+    if existing is not None:
+        reason = (
+            "lacks native projection schema"
+            if (
+                not _index_key_uses_keyword_analyzer(existing)
+                or not _index_has_projection_parent_field(existing)
+            )
+            else "is being rebuilt from Blob"
+        )
+        _log(
+            f"index '{index.name}' {reason}; deleting and recreating with "
+            "keyword key analyzer + parent_id"
+        )
+        _delete_kb_objects_before_index_recreate(
+            index_client,
+            index_name=index.name,
+            search_endpoint=search_endpoint,
+        )
+        _run_with_auth_retry(
+            lambda: index_client.delete_index(index.name),
+            what="AI Search index delete/recreate",
+            endpoint=search_endpoint,
+        )
+
+    _run_with_auth_retry(
+        lambda: index_client.create_or_update_index(index),
+        what="AI Search index create/update",
+        endpoint=search_endpoint,
+    )
+
+
+def _delete_kb_objects_before_index_recreate(
+    index_client,
+    *,
+    index_name: str,
+    search_endpoint: str,
+) -> None:
+    """Drop Foundry IQ Search KB objects that block deleting the referenced index."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    from .definitions.triage_agent import KB_KNOWLEDGE_BASE_NAME, KB_KNOWLEDGE_SOURCE_NAME
+
+    if index_name != KB_KNOWLEDGE_BASE_NAME:
+        return
+
+    for kind, name, delete_fn in [
+        (
+            "knowledge base",
+            KB_KNOWLEDGE_BASE_NAME,
+            getattr(index_client, "delete_knowledge_base", None),
+        ),
+        (
+            "knowledge source",
+            KB_KNOWLEDGE_SOURCE_NAME,
+            getattr(index_client, "delete_knowledge_source", None),
+        ),
+    ]:
+        if delete_fn is None:
+            continue
+        try:
+            _run_with_auth_retry(
+                lambda name=name, delete_fn=delete_fn: delete_fn(name),
+                what=f"AI Search {kind} delete before index recreate",
+                endpoint=search_endpoint,
+            )
+            _log(f"deleted {kind} '{name}' before recreating index '{index_name}'")
+        except ResourceNotFoundError:
+            pass
 
 
 def kb_indexing_resource_names(index_name: str) -> dict[str, str]:
@@ -362,22 +487,23 @@ def _build_kb_skillset(
         selectors=[
             SearchIndexerIndexProjectionSelector(
                 target_index_name=index_name,
-                parent_key_field_name="doc_id",
+                parent_key_field_name="parent_id",
                 source_context="/document/pages/*",
                 mappings=[
+                    InputFieldMappingEntry(name="doc_id", source="/document/doc_id"),
                     InputFieldMappingEntry(name="content", source="/document/pages/*"),
                     InputFieldMappingEntry(
                         name="content_vector", source="/document/pages/*/content_vector"
                     ),
-                    InputFieldMappingEntry(name="title", source="/document/metadata_title"),
-                    InputFieldMappingEntry(name="source", source="/document/metadata_source"),
+                    InputFieldMappingEntry(name="title", source="/document/title"),
+                    InputFieldMappingEntry(name="source", source="/document/source"),
                     InputFieldMappingEntry(
                         name="assignment_group",
-                        source="/document/metadata_assignment_group",
+                        source="/document/assignment_group",
                     ),
                     InputFieldMappingEntry(
                         name="resolution_steps",
-                        source="/document/metadata_resolution_steps",
+                        source="/document/resolution_steps",
                     ),
                 ],
             )
@@ -402,7 +528,6 @@ def _build_kb_indexer(
     index_name: str,
 ):
     from azure.search.documents.indexes.models import (
-        FieldMapping,
         IndexingParameters,
         IndexingParametersConfiguration,
         IndexingSchedule,
@@ -415,19 +540,6 @@ def _build_kb_indexer(
         target_index_name=index_name,
         skillset_name=skillset_name,
         description="Pull KB markdown from Blob, split, embed, and project chunks.",
-        field_mappings=[
-            FieldMapping(source_field_name="metadata_doc_id", target_field_name="doc_id"),
-            FieldMapping(source_field_name="metadata_title", target_field_name="title"),
-            FieldMapping(source_field_name="metadata_source", target_field_name="source"),
-            FieldMapping(
-                source_field_name="metadata_assignment_group",
-                target_field_name="assignment_group",
-            ),
-            FieldMapping(
-                source_field_name="metadata_resolution_steps",
-                target_field_name="resolution_steps",
-            ),
-        ],
         parameters=IndexingParameters(
             max_failed_items=0,
             max_failed_items_per_batch=0,
@@ -435,6 +547,7 @@ def _build_kb_indexer(
                 parsing_mode="text",
                 indexed_file_name_extensions=".md",
                 data_to_extract="contentAndMetadata",
+                query_timeout=None,
             ),
         ),
         schedule=IndexingSchedule(interval=timedelta(minutes=KB_INDEXER_INTERVAL_MINUTES)),
@@ -622,11 +735,7 @@ def build_search_index(
         openai_endpoint=openai_endpoint,
         embedding_deployment=embedding_deployment,
     )
-    _run_with_auth_retry(
-        lambda: index_client.create_or_update_index(index),  # idempotent
-        what="AI Search index create/update",
-        endpoint=search_endpoint,
-    )
+    _create_or_replace_index(index_client, index, search_endpoint=search_endpoint)
     _log(f"index '{index_name}' created/updated on {search_endpoint}")
 
     container = kb_container or "kbdocs"

@@ -186,9 +186,17 @@ def _admin_router() -> APIRouter:
         article["created_at"] = _utc_now_iso()
         markdown = _render_kb_markdown(article)
         blob_name = f"authored/{article['doc_id']}.md"
-        _upload_kb_blob(blob_name, markdown, _blob_metadata(article))
-        indexing = _try_run_indexer_after_publish()
-        gap = set_status(article["gap_hash"], "resolved", note=f"Published KB article {blob_name}")
+        try:
+            _upload_kb_blob(blob_name, markdown, _blob_metadata(article))
+            indexing = _try_run_indexer_after_publish()
+            gap = set_status(
+                article["gap_hash"], "resolved", note=f"Published KB article {blob_name}"
+            )
+        except Exception as exc:
+            _LOGGER.exception("Failed to publish KB article %s", blob_name)
+            return JSONResponse(
+                {"error": f"Failed to publish KB article: {exc}"}, status_code=500
+            )
         return JSONResponse(
             {"blob": blob_name, "gap": gap, "metadata": _blob_metadata(article), "indexing": indexing}
         )
@@ -397,8 +405,15 @@ author: {article["author"]}
 """
 
 
+def _metadata_safe(value: str) -> str:
+    """Azure Blob metadata values are sent as HTTP headers: they must be a single
+    line with no CR/LF or reserved characters. Collapse all whitespace (including
+    the newlines in multi-line fields like resolution_steps) to single spaces."""
+    return " ".join((value or "").replace("\r", "\n").split())
+
+
 def _blob_metadata(article: dict[str, str]) -> dict[str, str]:
-    return {
+    raw = {
         "doc_id": article["doc_id"],
         "title": article["title"],
         "source": article["source"],
@@ -409,6 +424,7 @@ def _blob_metadata(article: dict[str, str]) -> dict[str, str]:
         "created_at": article["created_at"],
         "author": article["author"],
     }
+    return {key: _metadata_safe(value) for key, value in raw.items() if value}
 
 
 def _upload_kb_blob(blob_name: str, markdown: str, metadata: dict[str, str]) -> None:

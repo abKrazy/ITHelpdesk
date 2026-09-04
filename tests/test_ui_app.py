@@ -414,3 +414,27 @@ def test_agui_live_proxy_does_not_record_gap_when_citations_present(monkeypatch)
     recorded = _run_live_proxy_over_events(events, "my laptop is slow", monkeypatch)
 
     assert recorded == []
+
+
+def test_blob_metadata_is_header_safe_for_multiline_fields() -> None:
+    """Blob metadata is sent as HTTP headers; multi-line fields such as
+    resolution_steps must be collapsed to a single line or the upload 500s."""
+    article = {
+        "doc_id": "dual-monitor-setup",
+        "title": "Setting Up Dual Monitors",
+        "source": "support-authored",
+        "assignment_group": "Desktop Support",
+        "keywords": "dual monitors, second monitor",
+        "resolution_steps": "1. Connect the monitor.\r\n2. Press Windows + P.\n3. Choose Extend.",
+        "gap_hash": "11b94af0fd134738",
+        "created_at": "2026-09-03T22:00:00Z",
+        "author": "admin@example.com",
+    }
+
+    metadata = ui_app_module._blob_metadata(article)
+
+    for key, value in metadata.items():
+        assert "\r" not in value and "\n" not in value, f"{key} contains a line break"
+    assert metadata["resolution_steps"] == (
+        "1. Connect the monitor. 2. Press Windows + P. 3. Choose Extend."
+    )
